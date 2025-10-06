@@ -43,12 +43,16 @@ const workspaceRoutes = require('./routes/workspaceRoutes');
 const canvasRoutes = require('./routes/canvasRoutes');
 const transactionRoutes = require('./routes/transactionRoutes');
 const quickLinkRoutes = require('./routes/quickLinkRoutes');
+const bookmarkRoutes = require('./routes/bookmarkRoutes');
+const userRoutes = require('./routes/userRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/canvas', canvasRoutes);
 app.use('/api/transaction', transactionRoutes);
 app.use('/api/quicklinks', quickLinkRoutes);
+app.use('/api/bookmarks', bookmarkRoutes);
+app.use('/api/user', userRoutes);
 
 // Root route
 app.get('/', (req, res) => {

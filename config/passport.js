@@ -1,5 +1,6 @@
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const User = require('../models/User');
+const { createDefaultQuickLinks } = require('../utils/createDefaultQuickLinks');
 
 module.exports = function(passport) {
   // Configure Google Strategy if credentials are provided
@@ -39,6 +40,9 @@ module.exports = function(passport) {
           googleId: profile.id,
           isFirstLogin: true
         });
+
+        // Create default quick links for new user
+        await createDefaultQuickLinks(user._id);
 
         done(null, user);
       } catch (error) {

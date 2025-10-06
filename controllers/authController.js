@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { createDefaultQuickLinks } = require('../utils/createDefaultQuickLinks');
 
 // Generate JWT Token
 const generateToken = (id) => {
@@ -28,6 +29,9 @@ exports.register = async (req, res) => {
     });
 
     if (user) {
+      // Create default quick links for new user
+      await createDefaultQuickLinks(user._id);
+
       res.status(201).json({
         _id: user._id,
         name: user.name,
