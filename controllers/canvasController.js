@@ -13,12 +13,8 @@ const getCanvasByWorkspace = async (req, res) => {
       return res.status(404).json({ message: 'Workspace not found' });
     }
 
-    // Check access
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    // Check access using the workspace model's canView method
+    if (!workspace.canView(req.user._id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -50,13 +46,9 @@ const getCanvasElements = async (req, res) => {
       return res.status(404).json({ message: 'Canvas not found' });
     }
 
-    // Check access
+    // Check access using the workspace model's canView method
     const workspace = canvas.workspace;
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    if (!workspace.canView(req.user._id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -83,13 +75,9 @@ const createCanvasElement = async (req, res) => {
       return res.status(404).json({ message: 'Canvas not found' });
     }
 
-    // Check access
+    // Check if user can edit content in this workspace
     const workspace = canvas.workspace;
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    if (!workspace.canEditContent(req.user._id, req.user.role)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -129,13 +117,9 @@ const updateCanvasElement = async (req, res) => {
       return res.status(404).json({ message: 'Element not found' });
     }
 
-    // Check access
+    // Check if user can edit content in this workspace
     const workspace = element.canvas.workspace;
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    if (!workspace.canEditContent(req.user._id, req.user.role)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -172,13 +156,9 @@ const deleteCanvasElement = async (req, res) => {
       return res.status(404).json({ message: 'Element not found' });
     }
 
-    // Check access
+    // Check if user can edit content in this workspace
     const workspace = element.canvas.workspace;
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    if (!workspace.canEditContent(req.user._id, req.user.role)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -202,13 +182,9 @@ const updateCanvasViewState = async (req, res) => {
       return res.status(404).json({ message: 'Canvas not found' });
     }
 
-    // Check access
+    // Check access using the workspace model's canView method
     const workspace = canvas.workspace;
-    const hasAccess = workspace.type === 'announcements' ||
-                     workspace.owner?.toString() === req.user._id.toString() ||
-                     workspace.members.some(m => m.toString() === req.user._id.toString());
-
-    if (!hasAccess) {
+    if (!workspace.canView(req.user._id)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 
@@ -227,25 +203,42 @@ const updateCanvasViewState = async (req, res) => {
 // @access  Private
 const searchCanvasElements = async (req, res) => {
   try {
-    const { query, mode, workspaceId } = req.query;
-
-    if (!query || query.trim().length === 0) {
-      return res.json([]);
-    }
+    const { query, mode, workspaceId, elementType, dateFrom, dateTo } = req.query;
 
     // Build search query
-    const searchRegex = new RegExp(query.trim(), 'i');
+    const searchRegex = query && query.trim().length > 0 ? new RegExp(query.trim(), 'i') : null;
 
     let canvasIds = [];
+    let allowedWorkspaceIds = new Set();
 
     if (mode === 'local' && workspaceId) {
-      // Search only in current workspace
+      // Search only in current workspace - verify user has access
+      const workspace = await Workspace.findById(workspaceId);
+
+      if (!workspace || !workspace.canView(req.user._id)) {
+        return res.json([]);
+      }
+
       const canvas = await Canvas.findOne({ workspace: workspaceId });
       if (canvas) {
         canvasIds = [canvas._id];
+        allowedWorkspaceIds.add(workspaceId.toString());
+      }
+    } else if (workspaceId) {
+      // Filter by specific workspace (for element linking)
+      const workspace = await Workspace.findById(workspaceId);
+
+      if (!workspace || !workspace.canView(req.user._id)) {
+        return res.json([]);
+      }
+
+      const canvas = await Canvas.findOne({ workspace: workspaceId });
+      if (canvas) {
+        canvasIds = [canvas._id];
+        allowedWorkspaceIds.add(workspaceId.toString());
       }
     } else {
-      // Global search - find all canvases user has access to
+      // Global search - find all workspaces user has access to
       const workspaces = await Workspace.find({
         $or: [
           { type: 'announcements' },
@@ -255,9 +248,23 @@ const searchCanvasElements = async (req, res) => {
         ]
       });
 
+      // Double-check access using canView method and store allowed workspace IDs
+      const accessibleWorkspaces = workspaces.filter(workspace =>
+        workspace.canView(req.user._id)
+      );
+
+      if (accessibleWorkspaces.length === 0) {
+        return res.json([]);
+      }
+
+      // Store allowed workspace IDs for final validation
+      accessibleWorkspaces.forEach(workspace => {
+        allowedWorkspaceIds.add(workspace._id.toString());
+      });
+
       const canvases = await Canvas.find({
-        workspace: { $in: workspaces.map(w => w._id) }
-      }).populate('workspace', 'name');
+        workspace: { $in: accessibleWorkspaces.map(w => w._id) }
+      }).populate('workspace', 'name owner members invitedMembers isPublic type');
 
       canvasIds = canvases.map(c => c._id);
     }
@@ -266,32 +273,65 @@ const searchCanvasElements = async (req, res) => {
       return res.json([]);
     }
 
-    // Search elements across multiple fields
-    const elements = await CanvasElement.find({
-      canvas: { $in: canvasIds },
-      $or: [
+    // Build element search filters
+    const elementFilters = {
+      canvas: { $in: canvasIds }
+    };
+
+    // Add text search if query provided
+    if (searchRegex) {
+      elementFilters.$or = [
         { 'content.value': searchRegex },
         { 'content.title': searchRegex },
         { 'content.description': searchRegex },
         { 'content.text': searchRegex },
         { 'content.examples.title': searchRegex },
         { 'content.examples.messages.text': searchRegex }
-      ]
-    })
+      ];
+    }
+
+    // Add element type filter
+    if (elementType) {
+      elementFilters.type = elementType;
+    }
+
+    // Add date range filter
+    if (dateFrom || dateTo) {
+      elementFilters.createdAt = {};
+      if (dateFrom) {
+        elementFilters.createdAt.$gte = new Date(dateFrom);
+      }
+      if (dateTo) {
+        // Add one day to dateTo to include the entire day
+        const dateToEnd = new Date(dateTo);
+        dateToEnd.setHours(23, 59, 59, 999);
+        elementFilters.createdAt.$lte = dateToEnd;
+      }
+    }
+
+    // Search elements with filters
+    const elements = await CanvasElement.find(elementFilters)
     .populate({
       path: 'canvas',
-      populate: { path: 'workspace', select: 'name' }
+      populate: { path: 'workspace', select: 'name owner members invitedMembers isPublic type' }
     })
-    .limit(50)
+    .sort({ createdAt: -1 })
+    .limit(100)
     .lean();
 
-    // Format results with workspace information
-    const results = elements.map(element => ({
-      ...element,
-      workspaceId: element.canvas.workspace._id,
-      workspaceName: element.canvas.workspace.name,
-      canvasId: element.canvas._id
-    }));
+    // Format results with workspace information and apply final security filter
+    const results = elements
+      .map(element => ({
+        ...element,
+        workspaceId: element.canvas.workspace._id,
+        workspaceName: element.canvas.workspace.name,
+        canvasId: element.canvas._id
+      }))
+      .filter(element => {
+        // Final security check: ensure the workspace is in our allowed list
+        const workspaceIdStr = element.workspaceId.toString();
+        return allowedWorkspaceIds.has(workspaceIdStr);
+      });
 
     res.json(results);
   } catch (error) {

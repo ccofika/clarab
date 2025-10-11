@@ -19,8 +19,16 @@ const workspaceSchema = new mongoose.Schema({
     }
   },
   members: [{
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'User'
+    user: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    permission: {
+      type: String,
+      enum: ['edit', 'view'],
+      default: 'edit'
+    }
   }],
   invitedMembers: [{
     type: mongoose.Schema.Types.ObjectId,
@@ -73,15 +81,25 @@ function extractId(item) {
   return item.toString();
 }
 
+// Helper function to extract user ID from member object
+function extractMemberId(member) {
+  if (!member) return null;
+  // If it's a new-style member object with user property
+  if (member.user) {
+    return extractId(member.user);
+  }
+  // If it's an old-style plain ObjectId
+  return extractId(member);
+}
+
 // Methods for permission checking
 workspaceSchema.methods.canEdit = function(userId, userRole) {
-  // Admin can edit everything
-  if (userRole === 'admin') return true;
-
   // Announcements can only be edited by admins
-  if (this.type === 'announcements') return false;
+  if (this.type === 'announcements') {
+    return userRole === 'admin';
+  }
 
-  // Owner can edit their own workspace
+  // For personal workspaces, only the owner can edit
   const ownerId = extractId(this.owner);
   const userIdStr = userId.toString();
   if (ownerId && ownerId === userIdStr) return true;
@@ -90,13 +108,10 @@ workspaceSchema.methods.canEdit = function(userId, userRole) {
 };
 
 workspaceSchema.methods.canDelete = function(userId, userRole) {
-  // Admin can delete personal workspaces
-  if (userRole === 'admin' && this.type === 'personal') return true;
-
   // Cannot delete announcements workspace
   if (this.type === 'announcements') return false;
 
-  // Owner can delete their own workspace
+  // Only owner can delete their own workspace
   const ownerId = extractId(this.owner);
   const userIdStr = userId.toString();
   if (ownerId && ownerId === userIdStr) return true;
@@ -115,7 +130,7 @@ workspaceSchema.methods.canView = function(userId) {
   if (ownerId && ownerId === userIdStr) return true;
 
   // Members can view
-  if (this.members && this.members.some(m => extractId(m) === userIdStr)) return true;
+  if (this.members && this.members.some(m => extractMemberId(m) === userIdStr)) return true;
 
   // Invited members can view
   if (this.invitedMembers && this.invitedMembers.some(m => extractId(m) === userIdStr)) return true;
@@ -136,8 +151,12 @@ workspaceSchema.methods.canEditContent = function(userId, userRole) {
   const ownerId = extractId(this.owner);
   if (ownerId && ownerId === userIdStr) return true;
 
-  // Members can edit content (but not invited members - they have read-only access)
-  if (this.members && this.members.some(m => extractId(m) === userIdStr)) return true;
+  // Members can edit content based on their permission level
+  // (but not invited members - they have read-only access)
+  if (this.members) {
+    const member = this.members.find(m => extractMemberId(m) === userIdStr);
+    if (member && member.permission === 'edit') return true;
+  }
 
   return false;
 };

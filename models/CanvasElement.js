@@ -62,7 +62,11 @@ const canvasElementSchema = new mongoose.Schema({
       bold: { type: Boolean, default: false },
       italic: { type: Boolean, default: false },
       underline: { type: Boolean, default: false },
-      hyperlink: String
+      hyperlink: String,
+      elementLink: {
+        elementId: String,
+        workspaceId: String
+      }
     },
     // History for undo/redo (stores last 3 changes)
     history: [{
@@ -71,7 +75,11 @@ const canvasElementSchema = new mongoose.Schema({
         bold: Boolean,
         italic: Boolean,
         underline: Boolean,
-        hyperlink: String
+        hyperlink: String,
+        elementLink: {
+          elementId: String,
+          workspaceId: String
+        }
       },
       timestamp: {
         type: Date,
@@ -83,14 +91,22 @@ const canvasElementSchema = new mongoose.Schema({
       bold: { type: Boolean, default: false },
       italic: { type: Boolean, default: false },
       underline: { type: Boolean, default: false },
-      hyperlink: String
+      hyperlink: String,
+      elementLink: {
+        elementId: String,
+        workspaceId: String
+      }
     },
     // Text formatting for description (in macro elements)
     descriptionFormatting: {
       bold: { type: Boolean, default: false },
       italic: { type: Boolean, default: false },
       underline: { type: Boolean, default: false },
-      hyperlink: String
+      hyperlink: String,
+      elementLink: {
+        elementId: String,
+        workspaceId: String
+      }
     },
     // For macro elements - separate histories for title and description
     titleHistory: [{
@@ -99,7 +115,11 @@ const canvasElementSchema = new mongoose.Schema({
         bold: Boolean,
         italic: Boolean,
         underline: Boolean,
-        hyperlink: String
+        hyperlink: String,
+        elementLink: {
+          elementId: String,
+          workspaceId: String
+        }
       },
       timestamp: {
         type: Date,
@@ -112,7 +132,11 @@ const canvasElementSchema = new mongoose.Schema({
         bold: Boolean,
         italic: Boolean,
         underline: Boolean,
-        hyperlink: String
+        hyperlink: String,
+        elementLink: {
+          elementId: String,
+          workspaceId: String
+        }
       },
       timestamp: {
         type: Date,
@@ -134,7 +158,11 @@ const canvasElementSchema = new mongoose.Schema({
         bold: { type: Boolean, default: false },
         italic: { type: Boolean, default: false },
         underline: { type: Boolean, default: false },
-        hyperlink: String
+        hyperlink: String,
+        elementLink: {
+          elementId: String,
+          workspaceId: String
+        }
       },
       timestamp: {
         type: Date,
