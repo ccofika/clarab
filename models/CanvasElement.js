@@ -55,6 +55,20 @@ const canvasElementSchema = new mongoose.Schema({
       type: String,
       default: '#ffffff'
     },
+    // Inline images metadata (for tracking uploaded images for cleanup)
+    inlineImages: [{
+      id: String, // Unique identifier for the image in the content
+      url: String, // Cloudinary secure URL
+      publicId: String, // Cloudinary public ID for deletion
+      width: Number,
+      height: Number,
+      format: String,
+      bytes: Number,
+      uploadedAt: {
+        type: Date,
+        default: Date.now
+      }
+    }],
     // For title/description/macro/example elements
     value: String,
     // Text formatting for value
@@ -361,6 +375,30 @@ canvasElementSchema.post('remove', async function() {
   const canvas = await Canvas.findById(this.canvas);
   if (canvas) {
     await canvas.updateElementCount();
+  }
+});
+
+// Clean up Cloudinary images when element is deleted
+canvasElementSchema.pre('findOneAndDelete', async function() {
+  try {
+    const doc = await this.model.findOne(this.getFilter());
+    if (doc && doc.content && doc.content.inlineImages && doc.content.inlineImages.length > 0) {
+      const cloudinary = require('../config/cloudinary');
+
+      // Delete all inline images from Cloudinary
+      for (const image of doc.content.inlineImages) {
+        if (image.publicId) {
+          try {
+            await cloudinary.uploader.destroy(image.publicId);
+            console.log(`Deleted image from Cloudinary: ${image.publicId}`);
+          } catch (error) {
+            console.error(`Failed to delete image ${image.publicId} from Cloudinary:`, error);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in cleanup hook:', error);
   }
 });
 
