@@ -260,9 +260,22 @@ exports.login = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
 
-    // SECURITY: Set secure cookies with __Host- prefix
-    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
-    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
+    // Get cookie options for logging
+    const accessTokenOptions = getAccessTokenCookieOptions();
+    const refreshTokenOptions = getRefreshTokenCookieOptions();
+
+    // SECURITY: Set secure cookies
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, accessTokenOptions);
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
+
+    // Log cookie configuration for debugging
+    console.log('🍪 Login - Cookie Configuration:', {
+      accessTokenName: COOKIE_NAMES.ACCESS_TOKEN,
+      refreshTokenName: COOKIE_NAMES.REFRESH_TOKEN,
+      accessTokenOptions,
+      refreshTokenOptions,
+      nodeEnv: process.env.NODE_ENV
+    });
 
     logger.auth('login_success', { userId: user._id });
 
