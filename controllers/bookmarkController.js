@@ -1,6 +1,7 @@
 const Bookmark = require('../models/Bookmark');
 const CanvasElement = require('../models/CanvasElement');
 const Workspace = require('../models/Workspace');
+const { logActivity } = require('../utils/activityLogger');
 
 // @desc    Get all bookmarks for current user
 // @route   GET /api/bookmarks
@@ -119,6 +120,19 @@ const createBookmark = async (req, res) => {
       }
     ]);
 
+    // Log bookmark creation
+    await logActivity({
+      level: 'info',
+      message: `Bookmark created: "${bookmarkName}"`,
+      module: 'bookmarkController',
+      user: req.user._id,
+      metadata: {
+        bookmark: `${bookmarkName} | ${bookmark._id}`,
+        workspace: `${workspace.name} | ${workspaceId}`
+      },
+      req
+    });
+
     res.status(201).json(bookmark);
   } catch (error) {
     console.error('Error creating bookmark:', error);
@@ -127,6 +141,16 @@ const createBookmark = async (req, res) => {
     if (error.code === 11000) {
       return res.status(400).json({ message: 'Bookmark already exists' });
     }
+
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to create bookmark',
+      module: 'bookmarkController',
+      user: req.user?._id,
+      metadata: { error: error.message },
+      req
+    });
 
     res.status(500).json({ message: 'Failed to create bookmark' });
   }
@@ -192,11 +216,35 @@ const deleteBookmark = async (req, res) => {
       return res.status(403).json({ message: 'Not authorized to delete this bookmark' });
     }
 
+    // Get bookmark name before deletion
+    const bookmarkName = bookmark.customName;
+
     await bookmark.deleteOne();
+
+    // Log bookmark deletion
+    await logActivity({
+      level: 'info',
+      message: `Bookmark deleted: "${bookmarkName}"`,
+      module: 'bookmarkController',
+      user: req.user._id,
+      metadata: {
+        bookmark: `${bookmarkName} | ${req.params.id}`
+      },
+      req
+    });
 
     res.json({ message: 'Bookmark deleted successfully' });
   } catch (error) {
     console.error('Error deleting bookmark:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to delete bookmark',
+      module: 'bookmarkController',
+      user: req.user?._id,
+      metadata: { error: error.message },
+      req
+    });
     res.status(500).json({ message: 'Failed to delete bookmark' });
   }
 };

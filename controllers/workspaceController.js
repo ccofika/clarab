@@ -1,5 +1,6 @@
 const Workspace = require('../models/Workspace');
 const Canvas = require('../models/Canvas');
+const { logActivity } = require('../utils/activityLogger');
 
 // @desc    Get all workspaces for user
 // @route   GET /api/workspaces
@@ -82,9 +83,9 @@ const createWorkspace = async (req, res) => {
   try {
     const { name, type, invitedMembers } = req.body;
 
-    // Only admins can create announcements workspace
-    if (type === 'announcements' && req.user.role !== 'admin') {
-      return res.status(403).json({ message: 'Only admins can create announcements workspace' });
+    // Only admins or developers can create announcements workspace
+    if (type === 'announcements' && req.user.role !== 'admin' && req.user.role !== 'developer') {
+      return res.status(403).json({ message: 'Only admins or developers can create announcements workspace' });
     }
 
     const workspace = await Workspace.create({
@@ -109,9 +110,32 @@ const createWorkspace = async (req, res) => {
       .populate('members.user', 'name email')
       .populate('invitedMembers', 'name email');
 
+    // Log workspace creation
+    await logActivity({
+      level: 'info',
+      message: `Workspace created: "${workspace.name}"`,
+      module: 'workspaceController',
+      user: req.user._id,
+      metadata: {
+        workspace: `${workspace.name} | ${workspace._id}`,
+        workspaceType: workspace.type,
+        invitedMembersCount: workspace.invitedMembers?.length || 0
+      },
+      req
+    });
+
     res.status(201).json(populatedWorkspace);
   } catch (error) {
     console.error('Error creating workspace:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: `Failed to create workspace: "${req.body.name}"`,
+      module: 'workspaceController',
+      user: req.user._id,
+      metadata: { error: error.message },
+      req
+    });
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -184,9 +208,36 @@ const deleteWorkspace = async (req, res) => {
 
     await Workspace.findByIdAndDelete(req.params.id);
 
+    // Count elements before deletion
+    const elementsCount = canvas ? await require('../models/CanvasElement').countDocuments({ canvas: canvas._id }) : 0;
+
+    // Log workspace deletion
+    await logActivity({
+      level: 'warn',
+      message: `Workspace deleted: "${workspace.name}"`,
+      module: 'workspaceController',
+      user: req.user._id,
+      metadata: {
+        workspace: `${workspace.name} | ${workspace._id}`,
+        workspaceType: workspace.type,
+        hadCanvas: !!canvas,
+        deletedElementsCount: elementsCount
+      },
+      req
+    });
+
     res.json({ message: 'Workspace deleted' });
   } catch (error) {
     console.error('Error deleting workspace:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to delete workspace',
+      module: 'workspaceController',
+      user: req.user._id,
+      metadata: { error: error.message },
+      req
+    });
     res.status(500).json({ message: 'Server error' });
   }
 };

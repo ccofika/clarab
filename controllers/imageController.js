@@ -1,6 +1,7 @@
 const cloudinary = require('../config/cloudinary');
 const multer = require('multer');
 const { Readable } = require('stream');
+const { logActivity } = require('../utils/activityLogger');
 
 // Configure multer to store files in memory
 const storage = multer.memoryStorage();
@@ -55,6 +56,21 @@ const uploadImage = async (req, res) => {
 
     const result = await uploadPromise;
 
+    // Log image upload
+    await logActivity({
+      level: 'info',
+      message: `Image uploaded: "${result.public_id}"`,
+      module: 'imageController',
+      user: req.user?._id,
+      metadata: {
+        image: result.public_id,
+        format: result.format,
+        size: `${(result.bytes / 1024).toFixed(2)} KB`,
+        dimensions: `${result.width}x${result.height}`
+      },
+      req
+    });
+
     // Return image data
     res.status(200).json({
       success: true,
@@ -70,6 +86,15 @@ const uploadImage = async (req, res) => {
     });
   } catch (error) {
     console.error('Error uploading image to Cloudinary:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to upload image',
+      module: 'imageController',
+      user: req.user?._id,
+      metadata: { error: error.message },
+      req
+    });
     res.status(500).json({
       success: false,
       message: 'Failed to upload image',
@@ -91,11 +116,31 @@ const deleteImage = async (req, res) => {
     const result = await cloudinary.uploader.destroy(publicId);
 
     if (result.result === 'ok') {
+      // Log image deletion
+      await logActivity({
+        level: 'info',
+        message: `Image deleted: "${publicId}"`,
+        module: 'imageController',
+        user: req.user?._id,
+        metadata: { image: publicId },
+        req
+      });
+
       res.status(200).json({
         success: true,
         message: 'Image deleted successfully'
       });
     } else {
+      // Log warning for failed deletion
+      await logActivity({
+        level: 'warn',
+        message: `Failed to delete image: "${publicId}"`,
+        module: 'imageController',
+        user: req.user?._id,
+        metadata: { image: publicId, result: result.result },
+        req
+      });
+
       res.status(400).json({
         success: false,
         message: 'Failed to delete image',
@@ -104,6 +149,15 @@ const deleteImage = async (req, res) => {
     }
   } catch (error) {
     console.error('Error deleting image from Cloudinary:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Error deleting image',
+      module: 'imageController',
+      user: req.user?._id,
+      metadata: { error: error.message, image: req.body.publicId },
+      req
+    });
     res.status(500).json({
       success: false,
       message: 'Failed to delete image',

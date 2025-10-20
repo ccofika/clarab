@@ -1,6 +1,50 @@
 const Canvas = require('../models/Canvas');
 const CanvasElement = require('../models/CanvasElement');
 const Workspace = require('../models/Workspace');
+const { logActivity } = require('../utils/activityLogger');
+
+// Helper function to get readable element name
+const getElementName = (element) => {
+  const stripHtml = (html) => {
+    if (!html) return '';
+    return html.replace(/<[^>]*>/g, '').trim();
+  };
+
+  let name = '';
+  switch (element.type) {
+    case 'title':
+    case 'description':
+      name = stripHtml(element.content?.value || '').substring(0, 50);
+      break;
+    case 'macro':
+      name = stripHtml(element.content?.title || '').substring(0, 50);
+      break;
+    case 'example':
+      const currentExample = element.content?.examples?.[element.content?.currentExampleIndex || 0];
+      name = stripHtml(currentExample?.title || '').substring(0, 50);
+      break;
+    case 'text':
+    case 'subtext':
+      name = stripHtml(element.content?.text || '').substring(0, 50);
+      break;
+    case 'card':
+      name = stripHtml(element.content?.title || element.content?.text || '').substring(0, 50);
+      break;
+    case 'sticky-note':
+      name = stripHtml(element.content?.text || '').substring(0, 30);
+      break;
+    case 'image':
+      name = 'Image';
+      break;
+    case 'link':
+      name = element.content?.url || 'Link';
+      break;
+    default:
+      name = element.type;
+  }
+
+  return name || `${element.type} element`;
+};
 
 // @desc    Get canvas by workspace ID
 // @route   GET /api/canvas/workspace/:workspaceId
@@ -96,9 +140,33 @@ const createCanvasElement = async (req, res) => {
       .populate('createdBy', 'name email')
       .populate('lastEditedBy', 'name email');
 
+    // Log element creation
+    const elementName = getElementName(element);
+    await logActivity({
+      level: 'info',
+      message: `Canvas element created: "${elementName}"`,
+      module: 'canvasController',
+      user: req.user._id,
+      metadata: {
+        element: `${elementName} | ${element._id}`,
+        elementType: element.type,
+        workspace: `${workspace.name} | ${workspace._id}`
+      },
+      req
+    });
+
     res.status(201).json(populatedElement);
   } catch (error) {
     console.error('Error creating canvas element:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to create canvas element',
+      module: 'canvasController',
+      user: req.user?._id,
+      metadata: { error: error.message, elementType: req.body?.type },
+      req
+    });
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -162,11 +230,37 @@ const deleteCanvasElement = async (req, res) => {
       return res.status(403).json({ message: 'Access denied' });
     }
 
+    // Get element name before deletion
+    const elementName = getElementName(element);
+
     await CanvasElement.findByIdAndDelete(req.params.elementId);
+
+    // Log element deletion
+    await logActivity({
+      level: 'warn',
+      message: `Canvas element deleted: "${elementName}"`,
+      module: 'canvasController',
+      user: req.user._id,
+      metadata: {
+        element: `${elementName} | ${req.params.elementId}`,
+        elementType: element.type,
+        workspace: `${workspace.name} | ${workspace._id}`
+      },
+      req
+    });
 
     res.json({ message: 'Element deleted' });
   } catch (error) {
     console.error('Error deleting canvas element:', error);
+    // Log error
+    await logActivity({
+      level: 'error',
+      message: 'Failed to delete canvas element',
+      module: 'canvasController',
+      user: req.user?._id,
+      metadata: { error: error.message },
+      req
+    });
     res.status(500).json({ message: 'Server error' });
   }
 };

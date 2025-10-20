@@ -13,17 +13,18 @@ const {
   cancelInvite
 } = require('../controllers/workspaceController');
 const { protect } = require('../middleware/auth');
+const { validate } = require('../middleware/validation');
 
 router.route('/')
   .get(protect, getWorkspaces)
-  .post(protect, createWorkspace);
+  .post(protect, validate('createWorkspace'), createWorkspace);
 
 router.route('/pending-invites')
   .get(protect, getPendingInvites);
 
 router.route('/:id')
   .get(protect, getWorkspace)
-  .put(protect, updateWorkspace)
+  .put(protect, validate('updateWorkspace'), updateWorkspace)
   .delete(protect, deleteWorkspace);
 
 router.route('/:id/accept-invite')

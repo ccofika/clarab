@@ -94,9 +94,9 @@ function extractMemberId(member) {
 
 // Methods for permission checking
 workspaceSchema.methods.canEdit = function(userId, userRole) {
-  // Announcements can only be edited by admins
+  // Announcements can only be edited by admins or developers
   if (this.type === 'announcements') {
-    return userRole === 'admin';
+    return userRole === 'admin' || userRole === 'developer';
   }
 
   // For personal workspaces, only the owner can edit
@@ -141,10 +141,10 @@ workspaceSchema.methods.canView = function(userId) {
 workspaceSchema.methods.canEditContent = function(userId, userRole) {
   const userIdStr = userId.toString();
 
-  // Admin can edit content in announcements
-  if (this.type === 'announcements' && userRole === 'admin') return true;
+  // Admin or Developer can edit content in announcements
+  if (this.type === 'announcements' && (userRole === 'admin' || userRole === 'developer')) return true;
 
-  // In announcements, only admin can edit
+  // In announcements, only admin or developer can edit
   if (this.type === 'announcements') return false;
 
   // Owner can edit content in their workspace
