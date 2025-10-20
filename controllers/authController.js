@@ -316,6 +316,21 @@ exports.login = async (req, res) => {
 exports.getProfile = async (req, res) => {
   try {
     const user = await User.findById(req.user._id).select('-password');
+
+    // SECURITY: If user authenticated with cookie (Google OAuth), also return token
+    // This allows frontend to store it in localStorage for subsequent requests
+    const authHeader = req.headers.authorization;
+    const cookieToken = req.cookies[COOKIE_NAMES.ACCESS_TOKEN];
+
+    // If authenticated via cookie (not Bearer token), generate and return token
+    if (cookieToken && !authHeader) {
+      const accessToken = generateAccessToken(user._id);
+      return res.json({
+        ...user.toObject(),
+        token: accessToken
+      });
+    }
+
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -327,19 +342,38 @@ exports.getProfile = async (req, res) => {
 exports.googleCallback = async (req, res) => {
   try {
     const user = req.user;
+    console.log('🎯 googleCallback executing for user:', user._id, user.email);
 
     // Generate access token and refresh token
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
+    console.log('🔑 Tokens generated successfully');
 
-    // SECURITY: Set secure cookies with __Host- prefix
-    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
-    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
+    // Get cookie options for logging
+    const accessTokenOptions = getAccessTokenCookieOptions();
+    const refreshTokenOptions = getRefreshTokenCookieOptions();
+
+    // SECURITY: Set secure cookies
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, accessTokenOptions);
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
+
+    // Log cookie configuration
+    console.log('🍪 Google OAuth - Cookie Configuration:', {
+      accessTokenName: COOKIE_NAMES.ACCESS_TOKEN,
+      refreshTokenName: COOKIE_NAMES.REFRESH_TOKEN,
+      accessTokenOptions,
+      refreshTokenOptions,
+      nodeEnv: process.env.NODE_ENV
+    });
 
     // Redirect to frontend with only non-sensitive data
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
-    res.redirect(`${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true`);
+    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true`;
+    console.log('🔀 Redirecting to:', redirectUrl);
+
+    res.redirect(redirectUrl);
   } catch (error) {
+    console.error('❌ googleCallback error:', error);
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     res.redirect(`${frontendURL}/login?error=${error.message}`);
   }
@@ -461,23 +495,56 @@ exports.changePassword = async (req, res) => {
     user.password = newPassword;
     await user.save();
 
-    // SECURITY: Revoke all JWT tokens issued before now (password changed)
-    // This forces the user to log in again with new password
     const ipAddress = req.ip || req.connection.remoteAddress;
-    await RevokedToken.revokeAllForUser(user._id, 'password_changed', ipAddress);
+
+    // SECURITY: Set tokenValidAfter to NOW (invalidate all OLD tokens)
+    // We'll issue new tokens AFTER this, so they'll be valid
+    const revocationTimestamp = new Date();
+    await User.findByIdAndUpdate(user._id, {
+      $set: { tokenValidAfter: revocationTimestamp }
+    });
+
+    // Small delay to ensure new tokens have iat > tokenValidAfter
+    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay
+
+    // SECURITY: Generate NEW tokens for current session (after tokenValidAfter is set)
+    const newAccessToken = generateAccessToken(user._id);
+    const newRefreshToken = await generateAndStoreRefreshToken(user._id, req);
+
+    // Revoke all OLD refresh tokens except the one we just created
+    await RefreshToken.updateMany(
+      {
+        user: user._id,
+        token: { $ne: newRefreshToken }, // Don't revoke the NEW refresh token
+        isRevoked: false
+      },
+      {
+        $set: {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokedByIp: ipAddress,
+          revokeReason: 'Password changed - old sessions terminated'
+        }
+      }
+    );
+
+    // Set NEW cookies (keep user logged in with new credentials)
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, newAccessToken, getAccessTokenCookieOptions());
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, newRefreshToken, getRefreshTokenCookieOptions());
 
     // Log password change
     await logActivity({
       level: 'info',
-      message: `Password changed and all tokens revoked: "${user.name} | ${user._id}"`,
+      message: `Password changed and all old tokens revoked: "${user.name} | ${user._id}"`,
       module: 'authController',
       user: user._id,
-      metadata: { ipAddress },
+      metadata: { ipAddress, newTokensIssued: true },
       req
     });
 
     res.json({
-      message: 'Password changed successfully. Please log in again with your new password.',
+      message: 'Password changed successfully. All other sessions have been logged out.',
+      token: newAccessToken,
       tokensRevoked: true
     });
   } catch (error) {

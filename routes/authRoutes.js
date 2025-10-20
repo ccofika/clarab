@@ -58,12 +58,25 @@ router.get('/google', (req, res, next) => {
 });
 
 router.get('/google/callback', (req, res, next) => {
+  console.log('🔄 Google callback hit, query params:', req.query);
+
   passport.authenticate('google', {
     session: false,
     failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=auth_failed`
   }, (err, user, info) => {
-    if (err) return next(err);
-    if (!user) return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=auth_failed`);
+    console.log('📋 Google auth result:', { err: err?.message, user: user?._id, info });
+
+    if (err) {
+      console.error('❌ Google OAuth error:', err);
+      return next(err);
+    }
+
+    if (!user) {
+      console.warn('⚠️  No user returned from Google auth, info:', info);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=auth_failed`);
+    }
+
+    console.log('✅ Google auth successful, user:', user.email);
     req.user = user;
     googleCallback(req, res, next);
   })(req, res, next);

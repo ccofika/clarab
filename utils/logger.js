@@ -231,4 +231,14 @@ logger.validation = function(schema, passed, errors = []) {
   }
 };
 
+/**
+ * Safely log security events (token revocation, suspicious activity, etc.)
+ * @param {string} event - Event name (e.g., 'revoked_token_used', 'invalid_token_used')
+ * @param {object} data - Event data (will be sanitized)
+ */
+logger.security = function(event, data = {}) {
+  const sanitizedData = sanitize(data);
+  logger.warn(`SECURITY: ${event}`, sanitizedData);
+};
+
 module.exports = logger;

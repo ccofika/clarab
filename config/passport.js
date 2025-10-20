@@ -14,10 +14,14 @@ module.exports = function(passport) {
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
+        console.log('🔐 Google Strategy executing for profile:', profile.id);
+
         const email = profile.emails[0].value;
+        console.log('📧 Email from Google:', email);
 
         // Check if email is from @mebit.io domain
         if (!email.endsWith('@mebit.io')) {
+          console.warn('⚠️  Email not from @mebit.io domain:', email);
           return done(null, false, { message: 'Only @mebit.io email addresses are allowed' });
         }
 
@@ -25,15 +29,18 @@ module.exports = function(passport) {
         let user = await User.findOne({ email });
 
         if (user) {
+          console.log('✅ Existing user found:', user._id);
           // Update googleId if not set
           if (!user.googleId) {
             user.googleId = profile.id;
             await user.save();
+            console.log('📝 Updated googleId for existing user');
           }
           return done(null, user);
         }
 
         // Create new user with Google profile
+        console.log('🆕 Creating new user from Google profile');
         user = await User.create({
           name: profile.displayName,
           email: email,
@@ -43,9 +50,11 @@ module.exports = function(passport) {
 
         // Create default quick links for new user
         await createDefaultQuickLinks(user._id);
+        console.log('✅ New user created:', user._id);
 
         done(null, user);
       } catch (error) {
+        console.error('❌ Google Strategy error:', error);
         done(error, null);
       }
     }));

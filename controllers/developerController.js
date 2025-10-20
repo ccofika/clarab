@@ -63,8 +63,8 @@ exports.getSystemMetrics = async (req, res) => {
       process: {
         memoryUsageMB,
         cpuUsage: {
-          user: cpuUsage.user,
-          system: cpuUsage.system
+          user: (cpuUsage.user / 1000000).toFixed(2) + 's',
+          system: (cpuUsage.system / 1000000).toFixed(2) + 's'
         },
         pid: process.pid
       },
