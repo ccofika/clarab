@@ -19,7 +19,9 @@ const {
 const { protect, admin } = require('../middleware/auth');
 const {
   loginLimiter,
-  registerLimiter
+  registerLimiter,
+  refreshLimiter,
+  changePasswordLimiter
 } = require('../middleware/rateLimiters');
 const { validate } = require('../middleware/validation');
 
@@ -30,12 +32,12 @@ router.post('/register', registerLimiter, validate('register'), register);
 router.post('/login', loginLimiter, validate('login'), login);
 
 // Token refresh route (public - uses refresh token from cookie)
-router.post('/refresh', refreshToken);
+router.post('/refresh', refreshLimiter, refreshToken);
 
-// Protected routes with validation (no rate limiting - already protected by JWT)
+// Protected routes with validation
 router.get('/profile', protect, getProfile);
 router.put('/profile', protect, validate('updateProfile'), updateProfile);
-router.put('/change-password', protect, validate('changePassword'), changePassword);
+router.put('/change-password', protect, changePasswordLimiter, validate('changePassword'), changePassword);
 router.post('/setup-password', protect, validate('setupPassword'), setupPassword);
 router.get('/users', protect, getAllUsers);
 router.post('/logout', protect, logout);

@@ -25,7 +25,7 @@ const userSchema = new mongoose.Schema({
     required: function() {
       return !this.googleId; // Password not required if user signed up with Google
     },
-    minlength: 6
+    minlength: [8, 'Password must be at least 8 characters long']
   },
   googleId: {
     type: String,
@@ -59,6 +59,13 @@ const userSchema = new mongoose.Schema({
   },
   lockUntil: {
     type: Date
+  },
+  // SECURITY: JWT token invalidation timestamp
+  // All tokens issued BEFORE this timestamp are considered invalid
+  // Used for: password change, security incidents, force logout
+  tokenValidAfter: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true
@@ -92,49 +99,112 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCK_TIME = 30 * 60 * 1000; // 30 minutes in milliseconds
 
-// Method to increment login attempts and lock account if necessary
-userSchema.methods.incLoginAttempts = function() {
-  // If lock has expired, reset attempts and lock
-  if (this.lockUntil && this.lockUntil < Date.now()) {
-    return this.updateOne({
-      $set: { loginAttempts: 1 },
-      $unset: { lockUntil: 1 }
-    });
+// SECURITY: Atomic increment of login attempts with race condition protection
+// This method uses MongoDB's atomic operations to prevent concurrent requests
+// from bypassing the account lockout mechanism
+userSchema.methods.incLoginAttempts = async function() {
+  const userId = this._id;
+
+  // SECURITY: Use findOneAndUpdate with atomic operations to prevent race conditions
+  // Multiple concurrent login attempts cannot bypass the lockout counter
+
+  // Step 1: Try to increment if lock has expired (atomic reset)
+  const expiredLockUpdate = await this.model('User').findOneAndUpdate(
+    {
+      _id: userId,
+      lockUntil: { $exists: true, $lt: new Date() } // Lock expired
+    },
+    {
+      $set: { loginAttempts: 1 }, // Reset to 1 (this failed attempt)
+      $unset: { lockUntil: 1 }     // Remove lock
+    },
+    { new: true }
+  );
+
+  if (expiredLockUpdate) {
+    // Successfully reset expired lock
+    return expiredLockUpdate;
   }
 
-  // Otherwise increment attempts
-  const updates = { $inc: { loginAttempts: 1 } };
+  // Step 2: Increment attempts ONLY if not already at max (prevents over-counting)
+  const incrementResult = await this.model('User').findOneAndUpdate(
+    {
+      _id: userId,
+      loginAttempts: { $lt: MAX_LOGIN_ATTEMPTS }, // Only increment if below max
+      $or: [
+        { lockUntil: { $exists: false } },           // Not locked
+        { lockUntil: { $lt: new Date() } }           // Lock expired (backup check)
+      ]
+    },
+    {
+      $inc: { loginAttempts: 1 } // Atomic increment
+    },
+    { new: true }
+  );
 
-  // Lock account if max attempts reached and not already locked
-  const attemptsReached = this.loginAttempts + 1 >= MAX_LOGIN_ATTEMPTS;
-  const shouldLock = attemptsReached && !this.isLocked;
-
-  if (shouldLock) {
-    updates.$set = { lockUntil: Date.now() + LOCK_TIME };
+  if (!incrementResult) {
+    // Already at max attempts or locked - do nothing
+    return await this.model('User').findById(userId);
   }
 
-  return this.updateOne(updates);
+  // Step 3: If we just hit MAX attempts, apply lock atomically
+  if (incrementResult.loginAttempts >= MAX_LOGIN_ATTEMPTS) {
+    const lockResult = await this.model('User').findOneAndUpdate(
+      {
+        _id: userId,
+        loginAttempts: { $gte: MAX_LOGIN_ATTEMPTS },
+        $or: [
+          { lockUntil: { $exists: false } },     // Not yet locked
+          { lockUntil: { $lt: new Date() } }     // Lock expired
+        ]
+      },
+      {
+        $set: { lockUntil: new Date(Date.now() + LOCK_TIME) }
+      },
+      { new: true }
+    );
+
+    return lockResult || incrementResult;
+  }
+
+  return incrementResult;
 };
 
-// Method to reset login attempts after successful login
+// SECURITY: Atomic reset of login attempts after successful login
 userSchema.methods.resetLoginAttempts = function() {
-  return this.updateOne({
-    $set: { loginAttempts: 0 },
-    $unset: { lockUntil: 1 }
-  });
+  return this.model('User').findOneAndUpdate(
+    { _id: this._id },
+    {
+      $set: { loginAttempts: 0 },
+      $unset: { lockUntil: 1 }
+    },
+    { new: true }
+  );
 };
 
-// Static method to unlock account (for admin use)
+// Reload user data from database (used after incrementing attempts)
+userSchema.methods.reload = async function() {
+  const fresh = await this.model('User').findById(this._id);
+  if (fresh) {
+    Object.assign(this, fresh.toObject());
+  }
+  return this;
+};
+
+// SECURITY: Atomic unlock account (for admin use)
 userSchema.statics.unlockAccount = async function(userId) {
-  const user = await this.findById(userId);
+  const user = await this.findOneAndUpdate(
+    { _id: userId },
+    {
+      $set: { loginAttempts: 0 },
+      $unset: { lockUntil: 1 }
+    },
+    { new: true }
+  );
+
   if (!user) {
     throw new Error('User not found');
   }
-
-  await user.updateOne({
-    $set: { loginAttempts: 0 },
-    $unset: { lockUntil: 1 }
-  });
 
   return user;
 };

@@ -32,13 +32,42 @@ app.use(helmet({
     }
   },
   crossOriginEmbedderPolicy: false, // For development compatibility
+  referrerPolicy: {
+    policy: 'strict-origin-when-cross-origin' // Prevents URL leakage in referrer header
+  }
 }));
 
-// CORS Middleware
-app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
-  credentials: true
-}));
+// CORS Middleware - Secure origin whitelist with validation
+const allowedOrigins = [
+  'http://localhost:3000',           // Local development
+  'http://localhost:3001',           // Backup dev port
+  'https://claraf.vercel.app',       // Production Vercel
+  process.env.FRONTEND_URL           // Additional custom origin from .env
+].filter(Boolean); // Remove undefined values
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, server-to-server)
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    // Check if origin is in whitelist
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log(`🚫 CORS blocked origin: ${origin}`);
+      callback(new Error(`CORS policy: Origin ${origin} is not allowed`));
+    }
+  },
+  credentials: true, // Allow cookies
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  exposedHeaders: ['Set-Cookie'],
+  maxAge: 86400 // Cache preflight for 24 hours
+};
+
+app.use(cors(corsOptions));
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
@@ -160,4 +189,9 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+  if (process.env.NODE_ENV === 'production') {
+    console.log(`🔒 Production mode: Secure cookies enabled (__Host- prefix)`);
+  } else {
+    console.log(`⚙️  Development mode: HTTP cookies (no HTTPS required)`);
+  }
 });

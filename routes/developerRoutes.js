@@ -9,7 +9,13 @@ const {
   getDatabaseStats,
   getLoginAttempts,
   getSuspiciousActivity,
-  getLockedAccounts
+  getLockedAccounts,
+  // Security Dashboard
+  getSecurityDashboard,
+  getRevokedTokens,
+  revokeUserTokens,
+  getSecuritySettings,
+  updateSecuritySettings
 } = require('../controllers/developerController');
 const { protect, developer } = require('../middleware/auth');
 
@@ -32,5 +38,12 @@ router.get('/logs', getSystemLogs);
 router.get('/login-attempts', getLoginAttempts);
 router.get('/suspicious-activity', getSuspiciousActivity);
 router.get('/locked-accounts', getLockedAccounts);
+
+// Security Dashboard - JWT Revocation & Settings
+router.get('/security/dashboard', getSecurityDashboard);
+router.get('/security/revoked-tokens', getRevokedTokens);
+router.post('/security/revoke-tokens', revokeUserTokens);
+router.get('/security/settings', getSecuritySettings);
+router.put('/security/settings', updateSecuritySettings);
 
 module.exports = router;

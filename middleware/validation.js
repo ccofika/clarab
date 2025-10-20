@@ -1,4 +1,5 @@
 const Joi = require('joi');
+const logger = require('../utils/logger');
 
 // Password validation schema with strong requirements
 const passwordSchema = Joi.string()
@@ -159,13 +160,11 @@ const validate = (schemaName) => {
     const schema = schemas[schemaName];
 
     if (!schema) {
-      console.error(`❌ Validation schema '${schemaName}' not found`);
+      logger.error(`Validation schema not found: ${schemaName}`);
       return res.status(500).json({ message: 'Validation schema not found' });
     }
 
-    // Log incoming request for debugging
-    console.log(`🔍 Validating ${schemaName}:`, JSON.stringify(req.body, null, 2));
-
+    // Validate request body
     const { error, value } = schema.validate(req.body, {
       abortEarly: false, // Return all errors, not just the first one
       stripUnknown: true // Remove unknown fields
@@ -173,14 +172,14 @@ const validate = (schemaName) => {
 
     if (error) {
       const errors = error.details.map(detail => detail.message);
-      console.error(`❌ Validation failed for ${schemaName}:`, errors);
+      logger.validation(schemaName, false, errors);
       return res.status(400).json({
         message: 'Validation failed',
         errors: errors
       });
     }
 
-    console.log(`✅ Validation passed for ${schemaName}`);
+    logger.validation(schemaName, true);
     // Replace req.body with validated and sanitized data
     req.body = value;
     next();

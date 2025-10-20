@@ -1,10 +1,23 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 const RefreshToken = require('../models/RefreshToken');
+const RevokedToken = require('../models/RevokedToken');
 const LoginAttempt = require('../models/LoginAttempt');
 const { createDefaultQuickLinks } = require('../utils/createDefaultQuickLinks');
 const { logActivity } = require('../utils/activityLogger');
+const logger = require('../utils/logger');
+const {
+  getAccessTokenCookieOptions,
+  getRefreshTokenCookieOptions,
+  COOKIE_NAMES
+} = require('../config/cookieConfig');
+
+// SECURITY: Pre-computed dummy hash for timing attack mitigation
+// This ensures bcrypt.compare() is ALWAYS called, even for non-existent users
+// Without this, attackers could enumerate valid emails by measuring response time
+const DUMMY_PASSWORD_HASH = '$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy';
 
 // Generate Access Token (JWT) - 15 minutes
 const generateAccessToken = (id) => {
@@ -58,23 +71,9 @@ exports.register = async (req, res) => {
       const accessToken = generateAccessToken(user._id);
       const refreshToken = await generateAndStoreRefreshToken(user._id, req);
 
-      // Set JWT access token cookie (15 minutes)
-      const accessCookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 15 * 60 * 1000 // 15 minutes
-      };
-      res.cookie('jwt', accessToken, accessCookieOptions);
-
-      // Set refresh token cookie (7 days)
-      const refreshCookieOptions = {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: 'lax',
-        maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-      };
-      res.cookie('refreshToken', refreshToken, refreshCookieOptions);
+      // SECURITY: Set secure cookies with __Host- prefix
+      res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
+      res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
 
       // Log successful registration
       await logActivity({
@@ -99,23 +98,42 @@ exports.register = async (req, res) => {
   }
 };
 
+// SECURITY: Artificial delay to normalize response times (timing attack mitigation)
+const addTimingDelay = async () => {
+  // Random delay between 100-150ms to prevent timing analysis
+  const delay = 100 + Math.floor(Math.random() * 51);
+  await new Promise(resolve => setTimeout(resolve, delay));
+};
+
 // Login User
 exports.login = async (req, res) => {
   try {
-    console.log('🔐 Login attempt:', { email: req.body.email });
+    logger.auth('login_attempt', { email: req.body.email });
     const { email, password } = req.body;
     const ipAddress = req.ip || req.connection.remoteAddress;
     const userAgent = req.get('user-agent') || '';
 
-    // Check user exists
+    // SECURITY: Step 1 - Always perform user lookup and password comparison in constant time
+    // This prevents timing attacks that could enumerate valid email addresses
     const user = await User.findOne({ email });
+
+    // SECURITY: Step 2 - ALWAYS perform bcrypt comparison (even for non-existent users)
+    // This ensures constant-time behavior regardless of user existence
+    let isPasswordValid = false;
+    if (user && user.password) {
+      // Real user - compare against real password hash
+      isPasswordValid = await bcrypt.compare(password, user.password);
+    } else {
+      // Non-existent user or no password - compare against dummy hash
+      // This takes the same time as a real comparison, preventing timing attacks
+      await bcrypt.compare(password, DUMMY_PASSWORD_HASH);
+      isPasswordValid = false; // Always false for non-existent users
+    }
+
+    // SECURITY: Step 3 - Check if user exists (after timing-sensitive operations)
     if (!user) {
-      console.log('❌ User not found:', email);
-
-      // Log failed attempt to database
+      logger.auth('login_failed_user_not_found', { email });
       await LoginAttempt.logAttempt(email, ipAddress, false, 'user_not_found', userAgent);
-
-      // Log to activity log
       await logActivity({
         level: 'warn',
         message: 'Failed login attempt - user not found',
@@ -124,12 +142,14 @@ exports.login = async (req, res) => {
         req
       });
 
+      // Add artificial delay before responding
+      await addTimingDelay();
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    console.log('✅ User found:', { email: user.email, role: user.role });
+    logger.auth('user_found', { userId: user._id, role: user.role });
 
-    // Check if account is locked
+    // SECURITY: Step 4 - Check if account is locked (before password validation)
     if (user.isLocked) {
       const lockTimeRemaining = Math.ceil((user.lockUntil - Date.now()) / 1000 / 60); // minutes
 
@@ -149,18 +169,19 @@ exports.login = async (req, res) => {
         req
       });
 
-      console.log('🔒 Account locked for:', email);
-      return res.status(423).json({
-        message: `Account is temporarily locked due to multiple failed login attempts. Please try again in ${lockTimeRemaining} minutes.`,
-        locked: true,
-        lockTimeRemaining
+      logger.auth('account_locked_attempt', { userId: user._id, lockTimeRemaining });
+
+      // Add artificial delay before responding
+      await addTimingDelay();
+      // SECURITY: Generic message without revealing exact lock time
+      return res.status(401).json({
+        message: 'Invalid email or password'
       });
     }
 
-    // Check password
-    const isMatch = await user.comparePassword(password);
-    if (!isMatch) {
-      console.log('❌ Password mismatch for:', email);
+    // SECURITY: Step 5 - Check password validity (bcrypt comparison already done above)
+    if (!isPasswordValid) {
+      logger.auth('password_mismatch', { userId: user._id });
 
       // Increment login attempts and potentially lock account
       await user.incLoginAttempts();
@@ -189,11 +210,13 @@ exports.login = async (req, res) => {
           req
         });
 
-        console.log('🔒 Account now locked for:', email);
-        return res.status(423).json({
-          message: `Account has been locked due to multiple failed login attempts. Please try again in ${lockTimeRemaining} minutes.`,
-          locked: true,
-          lockTimeRemaining
+        logger.auth('account_now_locked', { userId: user._id, attempts: user.loginAttempts });
+
+        // Add artificial delay before responding
+        await addTimingDelay();
+        // SECURITY: Generic message without revealing lock state or time
+        return res.status(401).json({
+          message: 'Invalid email or password'
         });
       }
 
@@ -213,13 +236,17 @@ exports.login = async (req, res) => {
         req
       });
 
+      // Add artificial delay before responding
+      await addTimingDelay();
+      // SECURITY: Generic message without revealing attempts left
       return res.status(401).json({
-        message: 'Invalid credentials',
-        attemptsLeft: attemptsLeft > 0 ? attemptsLeft : undefined
+        message: 'Invalid email or password'
       });
     }
 
-    console.log('✅ Password match for:', email);
+    // Password is correct - proceed with successful login
+
+    logger.auth('password_match', { userId: user._id });
 
     // Reset login attempts on successful login
     if (user.loginAttempts > 0 || user.lockUntil) {
@@ -233,25 +260,11 @@ exports.login = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
 
-    // Set JWT access token cookie (15 minutes)
-    const accessCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000 // 15 minutes
-    };
-    res.cookie('jwt', accessToken, accessCookieOptions);
+    // SECURITY: Set secure cookies with __Host- prefix
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
 
-    // Set refresh token cookie (7 days)
-    const refreshCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    };
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions);
-
-    console.log('✅ Login successful for:', email);
+    logger.auth('login_success', { userId: user._id });
 
     // Log successful login
     await logActivity({
@@ -267,6 +280,9 @@ exports.login = async (req, res) => {
       req
     });
 
+    // Add artificial delay for successful logins too (constant-time)
+    await addTimingDelay();
+
     res.json({
       _id: user._id,
       name: user.name,
@@ -275,7 +291,10 @@ exports.login = async (req, res) => {
       token: accessToken
     });
   } catch (error) {
-    console.error('❌ Login error:', error);
+    logger.error('Login error', { error: error.message, stack: error.stack });
+
+    // Add artificial delay for errors too
+    await addTimingDelay();
     res.status(500).json({ message: error.message });
   }
 };
@@ -300,23 +319,9 @@ exports.googleCallback = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
 
-    // Set JWT access token cookie (15 minutes)
-    const accessCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000 // 15 minutes
-    };
-    res.cookie('jwt', accessToken, accessCookieOptions);
-
-    // Set refresh token cookie (7 days)
-    const refreshCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    };
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions);
+    // SECURITY: Set secure cookies with __Host- prefix
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
 
     // Redirect to frontend with only non-sensitive data
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
@@ -347,6 +352,8 @@ exports.setupPassword = async (req, res) => {
     // SECURITY: Use authenticated user from JWT token (req.user) instead of userId from body
     const user = await User.findById(req.user._id);
     if (!user) {
+      // NOTE: "User not found" is safe here because this is an authenticated endpoint
+      // User already proved their identity via JWT, so this doesn't leak user enumeration info
       return res.status(404).json({ message: 'User not found' });
     }
 
@@ -364,23 +371,9 @@ exports.setupPassword = async (req, res) => {
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
 
-    // Set JWT access token cookie (15 minutes)
-    const accessCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000 // 15 minutes
-    };
-    res.cookie('jwt', accessToken, accessCookieOptions);
-
-    // Set refresh token cookie (7 days)
-    const refreshCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
-    };
-    res.cookie('refreshToken', refreshToken, refreshCookieOptions);
+    // SECURITY: Set secure cookies with __Host- prefix
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, getRefreshTokenCookieOptions());
 
     res.json({
       _id: user._id,
@@ -455,7 +448,25 @@ exports.changePassword = async (req, res) => {
     user.password = newPassword;
     await user.save();
 
-    res.json({ message: 'Password changed successfully' });
+    // SECURITY: Revoke all JWT tokens issued before now (password changed)
+    // This forces the user to log in again with new password
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    await RevokedToken.revokeAllForUser(user._id, 'password_changed', ipAddress);
+
+    // Log password change
+    await logActivity({
+      level: 'info',
+      message: `Password changed and all tokens revoked: "${user.name} | ${user._id}"`,
+      module: 'authController',
+      user: user._id,
+      metadata: { ipAddress },
+      req
+    });
+
+    res.json({
+      message: 'Password changed successfully. Please log in again with your new password.',
+      tokensRevoked: true
+    });
   } catch (error) {
     res.status(500).json({ message: error.message });
   }
@@ -550,10 +561,13 @@ exports.updateUserRole = async (req, res) => {
   }
 };
 
-// Refresh Access Token using Refresh Token
+// SECURITY: Refresh Access Token with Token Rotation
+// This endpoint rotates the refresh token on each use to prevent token theft
 exports.refreshToken = async (req, res) => {
   try {
-    const { refreshToken } = req.cookies;
+    const refreshToken = req.cookies[COOKIE_NAMES.REFRESH_TOKEN];
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent') || '';
 
     if (!refreshToken) {
       return res.status(401).json({ message: 'Refresh token not found' });
@@ -566,6 +580,35 @@ exports.refreshToken = async (req, res) => {
       return res.status(401).json({ message: 'Invalid refresh token' });
     }
 
+    // SECURITY: Detect token reuse (possible theft)
+    const reuseDetected = await RefreshToken.detectReuse(tokenDoc, ipAddress);
+    if (reuseDetected) {
+      logger.error('Token reuse detected - possible theft', {
+        userId: tokenDoc.user,
+        tokenFamily: tokenDoc.tokenFamily,
+        ipAddress
+      });
+
+      // Log security incident
+      await logActivity({
+        level: 'error',
+        message: 'SECURITY: Refresh token reuse detected - entire token family revoked',
+        module: 'authController',
+        user: tokenDoc.user,
+        metadata: {
+          tokenFamily: tokenDoc.tokenFamily,
+          ipAddress,
+          userAgent
+        },
+        req
+      });
+
+      return res.status(401).json({
+        message: 'Token reuse detected. All sessions have been terminated for security.',
+        securityIncident: true
+      });
+    }
+
     // Check if token is revoked
     if (tokenDoc.isRevoked) {
       return res.status(401).json({ message: 'Refresh token has been revoked' });
@@ -576,25 +619,27 @@ exports.refreshToken = async (req, res) => {
       return res.status(401).json({ message: 'Refresh token has expired' });
     }
 
+    // SECURITY: Rotate the refresh token (generate new, mark old as replaced)
+    const newRefreshTokenDoc = await RefreshToken.rotateToken(tokenDoc, ipAddress, userAgent);
+
     // Generate new access token
     const accessToken = generateAccessToken(tokenDoc.user);
 
-    // Set new JWT access token cookie (15 minutes)
-    const accessCookieOptions = {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'lax',
-      maxAge: 15 * 60 * 1000 // 15 minutes
-    };
-    res.cookie('jwt', accessToken, accessCookieOptions);
+    // SECURITY: Set secure cookies with __Host- prefix
+    res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, getAccessTokenCookieOptions());
+    res.cookie(COOKIE_NAMES.REFRESH_TOKEN, newRefreshTokenDoc.token, getRefreshTokenCookieOptions());
 
-    // Log token refresh
+    // Log token refresh and rotation
     await logActivity({
       level: 'info',
-      message: 'Access token refreshed',
+      message: 'Access token refreshed and refresh token rotated',
       module: 'authController',
       user: tokenDoc.user,
-      metadata: { deviceType: tokenDoc.deviceInfo.deviceType },
+      metadata: {
+        deviceType: tokenDoc.deviceInfo.deviceType,
+        tokenFamily: tokenDoc.tokenFamily,
+        oldTokenReplaced: true
+      },
       req
     });
 
@@ -603,7 +648,7 @@ exports.refreshToken = async (req, res) => {
       message: 'Token refreshed successfully'
     });
   } catch (error) {
-    console.error('❌ Refresh token error:', error);
+    logger.error('Refresh token error', { error: error.message, stack: error.stack });
     res.status(500).json({ message: error.message });
   }
 };
@@ -611,19 +656,42 @@ exports.refreshToken = async (req, res) => {
 // Logout - Revoke current refresh token
 exports.logout = async (req, res) => {
   try {
-    const { refreshToken } = req.cookies;
+    const ipAddress = req.ip || req.connection.remoteAddress;
+    const accessToken = req.cookies[COOKIE_NAMES.ACCESS_TOKEN] ||
+                       (req.headers.authorization?.startsWith('Bearer') ?
+                        req.headers.authorization.split(' ')[1] : null);
+    const refreshToken = req.cookies[COOKIE_NAMES.REFRESH_TOKEN];
 
+    // SECURITY: Revoke current access token (add to blacklist)
+    if (accessToken && req.user) {
+      try {
+        const decoded = jwt.decode(accessToken);
+        if (decoded && decoded.jti && decoded.iat && decoded.exp) {
+          await RevokedToken.revokeToken(
+            decoded.jti,
+            req.user._id,
+            decoded.iat,
+            decoded.exp,
+            'logout',
+            ipAddress
+          );
+        }
+      } catch (error) {
+        logger.error('Error revoking access token', { error: error.message });
+      }
+    }
+
+    // Revoke refresh token (if exists)
     if (refreshToken) {
       const tokenDoc = await RefreshToken.findOne({ token: refreshToken });
       if (tokenDoc && !tokenDoc.isRevoked) {
-        const ipAddress = req.ip || req.connection.remoteAddress;
         await tokenDoc.revoke(ipAddress, 'User logout');
       }
     }
 
     // Clear cookies
-    res.clearCookie('jwt');
-    res.clearCookie('refreshToken');
+    res.clearCookie(COOKIE_NAMES.ACCESS_TOKEN);
+    res.clearCookie(COOKIE_NAMES.REFRESH_TOKEN);
 
     // Log logout
     await logActivity({
@@ -636,7 +704,7 @@ exports.logout = async (req, res) => {
 
     res.json({ message: 'Logged out successfully' });
   } catch (error) {
-    console.error('❌ Logout error:', error);
+    logger.error('Logout error', { error: error.message, stack: error.stack });
     res.status(500).json({ message: error.message });
   }
 };
@@ -646,6 +714,14 @@ exports.logoutAll = async (req, res) => {
   try {
     const ipAddress = req.ip || req.connection.remoteAddress;
 
+    // SECURITY: Revoke ALL access tokens (user-level invalidation)
+    // This sets tokenValidAfter timestamp, invalidating all tokens issued before now
+    await RevokedToken.revokeAllForUser(
+      req.user._id,
+      'logout_all_devices',
+      ipAddress
+    );
+
     // Revoke all refresh tokens for this user
     await RefreshToken.revokeAllForUser(
       req.user._id,
@@ -654,21 +730,25 @@ exports.logoutAll = async (req, res) => {
     );
 
     // Clear cookies
-    res.clearCookie('jwt');
-    res.clearCookie('refreshToken');
+    res.clearCookie(COOKIE_NAMES.ACCESS_TOKEN);
+    res.clearCookie(COOKIE_NAMES.REFRESH_TOKEN);
 
     // Log logout from all devices
     await logActivity({
       level: 'info',
-      message: 'User logged out from all devices',
+      message: 'User logged out from all devices - all tokens revoked',
       module: 'authController',
       user: req.user._id,
+      metadata: { ipAddress, tokensRevoked: true },
       req
     });
 
-    res.json({ message: 'Logged out from all devices successfully' });
+    res.json({
+      message: 'Logged out from all devices successfully',
+      tokensRevoked: true
+    });
   } catch (error) {
-    console.error('❌ Logout all error:', error);
+    logger.error('Logout all error', { error: error.message, stack: error.stack });
     res.status(500).json({ message: error.message });
   }
 };
@@ -708,7 +788,7 @@ exports.unlockAccount = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Unlock account error:', error);
+    logger.error('Unlock account error', { error: error.message, stack: error.stack });
     res.status(500).json({ message: error.message });
   }
 };
