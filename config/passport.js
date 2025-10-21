@@ -83,7 +83,7 @@ module.exports = function(passport) {
       clientID: process.env.SLACK_CLIENT_ID,
       clientSecret: process.env.SLACK_CLIENT_SECRET,
       callbackURL: process.env.SLACK_CALLBACK_URL || 'http://localhost:5000/auth/slack/callback',
-      scope: ['chat:write', 'im:write', 'im:history', 'users:read', 'channels:history']
+      scope: 'chat:write im:write im:history users:read channels:history'
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
