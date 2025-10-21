@@ -1,5 +1,6 @@
 const { WebClient } = require('@slack/web-api');
 const User = require('../models/User');
+const KYCMessage = require('../models/KYCMessage');
 
 /**
  * Get Slack Web API client using user's access token
@@ -154,6 +155,22 @@ exports.sendDirectMessage = async (req, res) => {
       channel: result.channel
     });
 
+    // Save message to MongoDB
+    console.log('💾 Saving KYC message to database...');
+    const kycMessage = await KYCMessage.create({
+      senderId: req.user._id,
+      recipientEmail: recipientEmail,
+      recipientSlackId: recipient.id,
+      recipientName: recipient.real_name || recipient.name,
+      messageText: message,
+      slackThreadTs: result.ts,
+      slackChannel: result.channel,
+      status: 'pending',
+      sentAt: new Date()
+    });
+
+    console.log('✅ KYC message saved to database:', kycMessage._id);
+
     res.json({
       success: true,
       message: 'Direct message sent successfully',
@@ -162,10 +179,11 @@ exports.sendDirectMessage = async (req, res) => {
         channel: result.channel,
         recipient: {
           id: recipient.id,
-          name: recipient.name,
+          name: recipient.real_name || recipient.name,
           email: recipientEmail
         }
-      }
+      },
+      messageId: kycMessage._id
     });
 
   } catch (error) {
@@ -271,6 +289,32 @@ exports.getThreadReplies = async (req, res) => {
 
     res.status(500).json({
       message: 'Failed to fetch thread replies',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * Get user's KYC messages from database
+ * GET /api/slack/kyc-messages
+ */
+exports.getKYCMessages = async (req, res) => {
+  try {
+    console.log('📋 Fetching KYC messages for user:', req.user._id);
+
+    const messages = await KYCMessage.getUserMessages(req.user._id);
+
+    console.log(`✅ Found ${messages.length} KYC messages`);
+
+    res.json({
+      success: true,
+      messages: messages
+    });
+
+  } catch (error) {
+    console.error('❌ Error fetching KYC messages:', error);
+    res.status(500).json({
+      message: 'Failed to fetch KYC messages',
       error: error.message
     });
   }

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const User = require('../models/User');
+const KYCMessage = require('../models/KYCMessage');
 
 /**
  * Verify Slack request signature
@@ -118,6 +119,28 @@ const handleThreadReply = async (event, req) => {
       text: event.text?.substring(0, 50) + '...'
     });
 
+    // Find KYC message in database by thread timestamp
+    console.log('🔍 Looking for KYC message with thread:', event.thread_ts);
+    const kycMessage = await KYCMessage.findByThread(event.thread_ts);
+
+    if (!kycMessage) {
+      console.log('⚠️  KYC message not found for thread:', event.thread_ts);
+      return;
+    }
+
+    console.log('✅ Found KYC message:', kycMessage._id);
+
+    // Update KYC message with reply
+    console.log('💾 Updating KYC message with reply...');
+    await kycMessage.markAsResolved({
+      ts: event.ts,
+      user: event.user,
+      text: event.text,
+      userName: 'Slack User' // Will be updated if we fetch user info
+    });
+
+    console.log('✅ KYC message marked as resolved');
+
     // Get Socket.io instance
     const io = req.app.get('io');
     if (!io) {
@@ -134,7 +157,8 @@ const handleThreadReply = async (event, req) => {
         user: event.user,
         text: event.text,
         timestamp: new Date()
-      }
+      },
+      messageId: kycMessage._id
     });
 
     console.log('✅ Thread reply event emitted via Socket.io');

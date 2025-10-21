@@ -5,7 +5,8 @@ const {
   checkAccess,
   sendDirectMessage,
   getConversations,
-  getThreadReplies
+  getThreadReplies,
+  getKYCMessages
 } = require('../controllers/slackController');
 const { handleSlackEvent } = require('../controllers/slackWebhookController');
 
@@ -26,5 +27,8 @@ router.get('/conversations', getConversations);
 
 // Get thread replies
 router.get('/thread/:channel/:threadTs', getThreadReplies);
+
+// Get user's KYC messages
+router.get('/kyc-messages', getKYCMessages);
 
 module.exports = router;
