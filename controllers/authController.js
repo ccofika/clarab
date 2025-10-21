@@ -339,6 +339,7 @@ exports.getProfile = async (req, res) => {
 
 // Google OAuth Callback
 // SECURITY: Token sent via HTTP-only cookie instead of URL to prevent token exposure
+// After Google login, automatically redirect to Slack OAuth for combined authentication
 exports.googleCallback = async (req, res) => {
   try {
     const user = req.user;
@@ -366,14 +367,50 @@ exports.googleCallback = async (req, res) => {
       nodeEnv: process.env.NODE_ENV
     });
 
-    // Redirect to frontend with only non-sensitive data
+    // Check if user already has Slack token
+    if (user.slackAccessToken) {
+      console.log('✅ User already has Slack token, redirecting to frontend');
+      // User already connected to Slack, redirect to frontend
+      const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
+      const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true`;
+      console.log('🔀 Redirecting to:', redirectUrl);
+      return res.redirect(redirectUrl);
+    }
+
+    // Redirect to Slack OAuth for combined authentication
+    console.log('🔗 Redirecting to Slack OAuth for combined authentication');
+    const backendURL = process.env.BACKEND_URL || 'http://localhost:5000';
+    const slackOAuthUrl = `${backendURL}/auth/slack`;
+    console.log('🔀 Slack OAuth URL:', slackOAuthUrl);
+
+    res.redirect(slackOAuthUrl);
+  } catch (error) {
+    console.error('❌ googleCallback error:', error);
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true`;
-    console.log('🔀 Redirecting to:', redirectUrl);
+    res.redirect(`${frontendURL}/login?error=${error.message}`);
+  }
+};
+
+// Slack OAuth Callback
+// After Slack authentication, redirect to frontend with combined auth complete
+exports.slackCallback = async (req, res) => {
+  try {
+    const user = req.user;
+    console.log('🎯 slackCallback executing for user:', user._id, user.email);
+    console.log('✅ Slack tokens saved:', {
+      slackUserId: user.slackUserId,
+      slackTeamId: user.slackTeamId,
+      slackTeamName: user.slackTeamName
+    });
+
+    // Redirect to frontend with success
+    const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=true`;
+    console.log('🔀 Redirecting to frontend:', redirectUrl);
 
     res.redirect(redirectUrl);
   } catch (error) {
-    console.error('❌ googleCallback error:', error);
+    console.error('❌ slackCallback error:', error);
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     res.redirect(`${frontendURL}/login?error=${error.message}`);
   }

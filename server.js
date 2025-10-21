@@ -153,6 +153,7 @@ const userRoutes = require('./routes/userRoutes');
 const imageRoutes = require('./routes/imageRoutes');
 const developerRoutes = require('./routes/developerRoutes');
 const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
+const slackRoutes = require('./routes/slackRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -164,6 +165,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/developer', developerRoutes); // Developer-only endpoints
 app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
+app.use('/api/slack', slackRoutes); // Slack integration
 
 // Root route
 app.get('/', (req, res) => {
@@ -189,8 +191,43 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+// Create HTTP server for Socket.io integration
+const http = require('http');
+const { Server } = require('socket.io');
+
+const server = http.createServer(app);
+
+// Configure Socket.io with CORS
+const io = new Server(server, {
+  cors: {
+    origin: allowedOrigins,
+    credentials: true,
+    methods: ['GET', 'POST']
+  }
+});
+
+// Socket.io connection handler
+io.on('connection', (socket) => {
+  console.log('🔌 Socket.io client connected:', socket.id);
+
+  socket.on('disconnect', () => {
+    console.log('🔌 Socket.io client disconnected:', socket.id);
+  });
+
+  // Handle user authentication for socket
+  socket.on('authenticate', (data) => {
+    console.log('🔐 Socket authenticated for user:', data.userId);
+    socket.userId = data.userId;
+    socket.join(`user:${data.userId}`);
+  });
+});
+
+// Make io available to routes
+app.set('io', io);
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server is running on port ${PORT}`);
+  console.log(`🔌 Socket.io enabled`);
   if (process.env.NODE_ENV === 'production') {
     console.log(`🔒 Production mode: Secure cookies enabled (__Host- prefix)`);
   } else {

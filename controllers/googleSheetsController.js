@@ -187,26 +187,21 @@ exports.searchAffiliate = async (req, res) => {
 
       if (rowAffiliateName === searchAffiliateName) {
         const bonusValue = row[DB_COLUMNS.BONUS] || '';
-        const hasCampaignId = bonusValue.trim() !== '';
 
-        // If row has campaign ID but user didn't provide one, skip for now
-        if (hasCampaignId && !campaignId) {
-          continue;
-        }
-
-        // If row has campaign ID and user provided one, check if they match
-        if (hasCampaignId && campaignId) {
+        // If user provided a campaign ID, only include rows that match
+        if (campaignId && bonusValue.trim() !== '') {
           if (bonusValue.trim().toLowerCase() !== campaignId.trim().toLowerCase()) {
             continue;
           }
         }
 
+        // If no campaign ID provided, include ALL rows for this affiliate
         // Row matches! Add to results
         results.push({
           source: 'DB',
           bonusStatus: row[DB_COLUMNS.BONUS_STATUS] || '',
           affiliateName: row[DB_COLUMNS.AFFILIATE_NAME] || '',
-          campaignId: bonusValue,
+          bonus: bonusValue,
           percentage: row[DB_COLUMNS.PERCENTAGE] || '',
           wager: row[DB_COLUMNS.WAGER] || '',
           minDeposit: row[DB_COLUMNS.MIN_DEPOSIT] || '',
@@ -230,20 +225,15 @@ exports.searchAffiliate = async (req, res) => {
 
       if (rowAffiliateName === searchAffiliateName) {
         const campaignSpecific = row[WB_COLUMNS.CAMPAIGN_SPECIFIC] || '';
-        const hasCampaignId = campaignSpecific.trim() !== '';
 
-        // If row has campaign ID but user didn't provide one, skip for now
-        if (hasCampaignId && !campaignId) {
-          continue;
-        }
-
-        // If row has campaign ID and user provided one, check if they match
-        if (hasCampaignId && campaignId) {
+        // If user provided a campaign ID, only include rows that match
+        if (campaignId && campaignSpecific.trim() !== '') {
           if (campaignSpecific.trim().toLowerCase() !== campaignId.trim().toLowerCase()) {
             continue;
           }
         }
 
+        // If no campaign ID provided, include ALL rows for this affiliate
         // Row matches! Add to results
         results.push({
           source: 'WB',
@@ -270,22 +260,7 @@ exports.searchAffiliate = async (req, res) => {
     if (results.length === 0) {
       return res.status(404).json({
         message: 'No affiliate found with the provided name' + (campaignId ? ' and campaign ID' : ''),
-        requiresCampaignId: false
-      });
-    }
-
-    // Check if we need to request campaign ID
-    // This happens when affiliate exists but has campaign-specific offers
-    const allHaveCampaignIds = results.every(r =>
-      (r.source === 'DB' && r.campaignId) ||
-      (r.source === 'WB' && r.campaignSpecific)
-    );
-
-    if (!campaignId && allHaveCampaignIds) {
-      return res.status(200).json({
-        requiresCampaignId: true,
-        message: 'This affiliate has campaign-specific bonuses. Please provide a Campaign ID.',
-        affiliateName: results[0].affiliateName
+        success: false
       });
     }
 
@@ -293,8 +268,7 @@ exports.searchAffiliate = async (req, res) => {
 
     res.json({
       success: true,
-      results,
-      requiresCampaignId: false
+      results
     });
 
   } catch (error) {

@@ -5,6 +5,7 @@ const {
   login,
   getProfile,
   googleCallback,
+  slackCallback,
   setupPassword,
   updateProfile,
   changePassword,
@@ -85,6 +86,39 @@ router.get('/google/callback', (req, res, next) => {
     console.log('✅ Google auth successful, user:', user.email);
     req.user = user;
     googleCallback(req, res, next);
+  })(req, res, next);
+});
+
+// Slack OAuth routes with session: false for JWT
+router.get('/slack', (req, res, next) => {
+  console.log('🎯 Slack route hit, passport strategies:', passport._strategies ? Object.keys(passport._strategies) : 'none');
+  passport.authenticate('slack', {
+    session: false
+  })(req, res, next);
+});
+
+router.get('/slack/callback', (req, res, next) => {
+  console.log('🔄 Slack callback hit, query params:', req.query);
+
+  passport.authenticate('slack', {
+    session: false,
+    failureRedirect: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=slack_auth_failed`
+  }, (err, user, info) => {
+    console.log('📋 Slack auth result:', { err: err?.message, user: user?._id, info });
+
+    if (err) {
+      console.error('❌ Slack OAuth error:', err);
+      return next(err);
+    }
+
+    if (!user) {
+      console.warn('⚠️  No user returned from Slack auth, info:', info);
+      return res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:3000'}/login?error=slack_auth_failed`);
+    }
+
+    console.log('✅ Slack auth successful, user:', user.email);
+    req.user = user;
+    slackCallback(req, res, next);
   })(req, res, next);
 });
 

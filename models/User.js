@@ -38,6 +38,20 @@ const userSchema = new mongoose.Schema({
   googleRefreshToken: {
     type: String
   },
+  // Slack OAuth fields
+  slackAccessToken: {
+    type: String
+  },
+  slackUserId: {
+    type: String,
+    sparse: true
+  },
+  slackTeamId: {
+    type: String
+  },
+  slackTeamName: {
+    type: String
+  },
   isFirstLogin: {
     type: Boolean,
     default: true
