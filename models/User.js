@@ -32,6 +32,12 @@ const userSchema = new mongoose.Schema({
     sparse: true,
     unique: true
   },
+  googleAccessToken: {
+    type: String
+  },
+  googleRefreshToken: {
+    type: String
+  },
   isFirstLogin: {
     type: Boolean,
     default: true

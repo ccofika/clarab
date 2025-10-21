@@ -152,6 +152,7 @@ const bookmarkRoutes = require('./routes/bookmarkRoutes');
 const userRoutes = require('./routes/userRoutes');
 const imageRoutes = require('./routes/imageRoutes');
 const developerRoutes = require('./routes/developerRoutes');
+const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -162,6 +163,7 @@ app.use('/api/bookmarks', bookmarkRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/images', imageRoutes);
 app.use('/api/developer', developerRoutes); // Developer-only endpoints
+app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
 
 // Root route
 app.get('/', (req, res) => {

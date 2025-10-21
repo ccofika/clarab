@@ -52,7 +52,13 @@ router.post('/admin/unlock-account', protect, admin, unlockAccount);
 router.get('/google', (req, res, next) => {
   console.log('🎯 Google route hit, passport strategies:', passport._strategies ? Object.keys(passport._strategies) : 'none');
   passport.authenticate('google', {
-    scope: ['profile', 'email'],
+    scope: [
+      'profile',
+      'email',
+      'https://www.googleapis.com/auth/spreadsheets.readonly'
+    ],
+    accessType: 'offline',
+    prompt: 'consent',
     session: false
   })(req, res, next);
 });

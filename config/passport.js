@@ -30,12 +30,18 @@ module.exports = function(passport) {
 
         if (user) {
           console.log('✅ Existing user found:', user._id);
-          // Update googleId if not set
+          // Update googleId and tokens if not set
           if (!user.googleId) {
             user.googleId = profile.id;
-            await user.save();
-            console.log('📝 Updated googleId for existing user');
           }
+          // Always update access token
+          user.googleAccessToken = accessToken;
+          // Update refresh token if provided (not always sent)
+          if (refreshToken) {
+            user.googleRefreshToken = refreshToken;
+          }
+          await user.save();
+          console.log('📝 Updated Google tokens for existing user');
           return done(null, user);
         }
 
@@ -45,6 +51,8 @@ module.exports = function(passport) {
           name: profile.displayName,
           email: email,
           googleId: profile.id,
+          googleAccessToken: accessToken,
+          googleRefreshToken: refreshToken,
           isFirstLogin: true
         });
 
