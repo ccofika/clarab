@@ -69,6 +69,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
+// Slack webhook endpoint needs raw body for signature verification
+app.use('/api/slack/events', express.raw({ type: 'application/json' }));
+
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));

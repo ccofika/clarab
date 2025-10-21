@@ -367,23 +367,14 @@ exports.googleCallback = async (req, res) => {
       nodeEnv: process.env.NODE_ENV
     });
 
-    // Check if user already has Slack token
-    if (user.slackAccessToken) {
-      console.log('✅ User already has Slack token, redirecting to frontend');
-      // User already connected to Slack, redirect to frontend
-      const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
-      const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true`;
-      console.log('🔀 Redirecting to:', redirectUrl);
-      return res.redirect(redirectUrl);
-    }
+    // Redirect to frontend after successful Google login
+    // Slack OAuth is now optional - user can connect later from settings
+    console.log('✅ Google login successful, redirecting to frontend');
+    const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
+    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=${!!user.slackAccessToken}`;
+    console.log('🔀 Redirecting to:', redirectUrl);
 
-    // Redirect to Slack OAuth for combined authentication
-    console.log('🔗 Redirecting to Slack OAuth for combined authentication');
-    const backendURL = process.env.BACKEND_URL || 'http://localhost:5000';
-    const slackOAuthUrl = `${backendURL}/api/auth/slack`;
-    console.log('🔀 Slack OAuth URL:', slackOAuthUrl);
-
-    res.redirect(slackOAuthUrl);
+    res.redirect(redirectUrl);
   } catch (error) {
     console.error('❌ googleCallback error:', error);
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
