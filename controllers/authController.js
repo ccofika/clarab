@@ -380,7 +380,7 @@ exports.googleCallback = async (req, res) => {
     // Redirect to Slack OAuth for combined authentication
     console.log('🔗 Redirecting to Slack OAuth for combined authentication');
     const backendURL = process.env.BACKEND_URL || 'http://localhost:5000';
-    const slackOAuthUrl = `${backendURL}/auth/slack`;
+    const slackOAuthUrl = `${backendURL}/api/auth/slack`;
     console.log('🔀 Slack OAuth URL:', slackOAuthUrl);
 
     res.redirect(slackOAuthUrl);
