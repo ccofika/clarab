@@ -6,12 +6,12 @@ const KYCMessage = require('../models/KYCMessage');
  * Verify Slack request signature
  * https://api.slack.com/authentication/verifying-requests-from-slack
  */
-const verifySlackSignature = (req) => {
+const verifySlackSignature = (req, rawBody) => {
   const slackSignature = req.headers['x-slack-signature'];
   const timestamp = req.headers['x-slack-request-timestamp'];
 
-  // Use raw body for signature verification (set by express.raw middleware)
-  const body = req.body.toString('utf8');
+  // Use raw body for signature verification
+  const body = rawBody;
 
   // Prevent replay attacks - request should be within 5 minutes
   const time = Math.floor(new Date().getTime() / 1000);
@@ -50,8 +50,17 @@ const verifySlackSignature = (req) => {
  */
 exports.handleSlackEvent = async (req, res) => {
   try {
-    // Parse raw body to JSON
-    const payload = JSON.parse(req.body.toString('utf8'));
+    // Check if body is already parsed or raw buffer
+    let payload, rawBody;
+    if (Buffer.isBuffer(req.body)) {
+      // Body is raw buffer, parse it
+      rawBody = req.body.toString('utf8');
+      payload = JSON.parse(rawBody);
+    } else {
+      // Body already parsed by express.json() - recreate raw body
+      rawBody = JSON.stringify(req.body);
+      payload = req.body;
+    }
 
     console.log('🔔 Slack webhook received:', {
       type: payload.type,
@@ -65,7 +74,7 @@ exports.handleSlackEvent = async (req, res) => {
     }
 
     // Verify request is from Slack (for all other events)
-    if (!verifySlackSignature(req)) {
+    if (!verifySlackSignature(req, rawBody)) {
       console.error('❌ Slack signature verification failed');
       return res.status(401).json({ error: 'Invalid signature' });
     }
