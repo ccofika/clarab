@@ -50,34 +50,32 @@ const verifySlackSignature = (req, rawBody) => {
  */
 exports.handleSlackEvent = async (req, res) => {
   try {
-    // Debug: Log what we received
-    console.log('📦 Raw body type:', typeof req.body);
-    console.log('📦 Is Buffer?:', Buffer.isBuffer(req.body));
-    console.log('📦 Body preview:', req.body);
+    // Convert numbered object back to Buffer if needed
+    let rawBody, payload;
 
-    // Check if body is already parsed or raw buffer
-    let payload, rawBody;
     if (Buffer.isBuffer(req.body)) {
-      // Body is raw buffer, parse it
+      // Already a buffer
       rawBody = req.body.toString('utf8');
       payload = JSON.parse(rawBody);
-      console.log('✅ Parsed from buffer');
+    } else if (typeof req.body === 'object' && req.body !== null && '0' in req.body) {
+      // Object with numbered keys - convert back to Buffer
+      const bodyArray = Object.values(req.body);
+      const buffer = Buffer.from(bodyArray);
+      rawBody = buffer.toString('utf8');
+      payload = JSON.parse(rawBody);
     } else if (typeof req.body === 'string') {
-      // Body is string, parse it
+      // String
       rawBody = req.body;
       payload = JSON.parse(rawBody);
-      console.log('✅ Parsed from string');
     } else {
-      // Body already parsed by express.json() - recreate raw body
+      // Already parsed JSON object
       rawBody = JSON.stringify(req.body);
       payload = req.body;
-      console.log('✅ Using parsed object');
     }
 
     console.log('🔔 Slack webhook received:', {
       type: payload.type,
-      event: payload.event?.type,
-      rawBodyLength: rawBody?.length
+      event: payload.event?.type
     });
 
     // Handle URL verification challenge (first time setup)
