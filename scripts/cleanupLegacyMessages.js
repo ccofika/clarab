@@ -1,7 +1,13 @@
 const mongoose = require('mongoose');
+require('dotenv').config(); // Load environment variables
 
-// MongoDB URI
-const MONGODB_URI = 'mongodb+srv://clara:O2cHoq5RUrHMfehr@cluster0.j7qwv9p.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
+// SECURITY: Use MongoDB URI from environment variables
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error('❌ MONGODB_URI not found in environment variables');
+  process.exit(1);
+}
 
 // Connect to MongoDB
 async function cleanupLegacyMessages() {
