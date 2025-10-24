@@ -535,16 +535,20 @@ exports.sendKYCRequest = async (req, res) => {
       newMessageTs: result.ts,
       threadTs: result.thread_ts,
       channel: result.channel,
-      finalThreadTs: result.thread_ts || result.ts
+      existingThreadTs: existingThreadTs,
+      finalThreadTs: existingThreadTs || result.thread_ts || result.ts
     });
 
     // Save message to MongoDB
-    const threadTsToSave = result.thread_ts || result.ts;
+    // IMPORTANT: If we're replying to existing thread, use that threadTs
+    // Otherwise use what Slack returned (result.thread_ts or result.ts)
+    const threadTsToSave = existingThreadTs || result.thread_ts || result.ts;
     console.log('💾 Saving KYC message to database:', {
       username: username,
       slackThreadTs: threadTsToSave,
       slackChannel: result.channel,
-      isReplyInThread: !!result.thread_ts
+      isReplyInThread: !!existingThreadTs || !!result.thread_ts,
+      usedExistingThread: !!existingThreadTs
     });
 
     const kycMessage = await KYCMessage.create({
@@ -573,7 +577,7 @@ exports.sendKYCRequest = async (req, res) => {
       slack: {
         ts: result.ts,
         channel: result.channel,
-        threadTs: result.thread_ts || result.ts,
+        threadTs: threadTsToSave, // Use the same threadTs we saved to database
         recipient: {
           id: recipient.id,
           name: recipient.real_name || recipient.name,
