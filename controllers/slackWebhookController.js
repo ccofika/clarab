@@ -149,16 +149,36 @@ const handleThreadReply = async (event, req) => {
       text: event.text?.substring(0, 50) + '...'
     });
 
-    // Find KYC message in database by thread timestamp
-    console.log('🔍 Looking for KYC message with thread:', event.thread_ts);
-    const kycMessage = await KYCMessage.findByThread(event.thread_ts);
+    // Find ALL KYC messages in this thread, then select the LATEST PENDING one
+    console.log('🔍 Looking for KYC messages with thread:', event.thread_ts);
+    const allMessagesInThread = await KYCMessage.findAllByThread(event.thread_ts);
 
-    if (!kycMessage) {
-      console.log('⚠️  KYC message not found for thread:', event.thread_ts);
+    if (!allMessagesInThread || allMessagesInThread.length === 0) {
+      console.log('⚠️  No KYC messages found for thread:', event.thread_ts);
       return;
     }
 
-    console.log('✅ Found KYC message:', kycMessage._id);
+    console.log(`📊 Found ${allMessagesInThread.length} message(s) in thread:`,
+      allMessagesInThread.map(m => ({ id: m._id, status: m.status, sentAt: m.sentAt }))
+    );
+
+    // Find the LATEST pending message (if any)
+    let kycMessage = allMessagesInThread
+      .filter(m => m.status === 'pending')
+      .sort((a, b) => b.sentAt - a.sentAt)[0];
+
+    // If no pending message, use the latest message (regardless of status)
+    if (!kycMessage) {
+      console.log('ℹ️  No pending message found, using latest message');
+      kycMessage = allMessagesInThread[allMessagesInThread.length - 1]; // Last one (newest)
+    }
+
+    console.log('✅ Selected KYC message to update:', {
+      id: kycMessage._id,
+      status: kycMessage.status,
+      username: kycMessage.username,
+      sentAt: kycMessage.sentAt
+    });
 
     // Check if this is the first reply (before updating)
     const isFirstReply = !kycMessage.hasReceivedFirstReply;

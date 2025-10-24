@@ -34,10 +34,10 @@ const kycMessageSchema = new mongoose.Schema({
   },
 
   // Slack thread information
+  // NOTE: Not unique - multiple messages can be in the same thread
   slackThreadTs: {
     type: String,
     required: true,
-    unique: true,
     index: true
   },
   slackChannel: {
@@ -126,6 +126,12 @@ kycMessageSchema.statics.getUserMessages = function(userId, limit = 50) {
 kycMessageSchema.statics.findByThread = function(threadTs) {
   return this.findOne({ slackThreadTs: threadTs })
     .sort({ sentAt: -1 }); // Get the LATEST message with this threadTs
+};
+
+// Static method to find ALL messages in a thread
+kycMessageSchema.statics.findAllByThread = function(threadTs) {
+  return this.find({ slackThreadTs: threadTs })
+    .sort({ sentAt: 1 }); // Oldest first (chronological order)
 };
 
 // Static method to find latest message by username
