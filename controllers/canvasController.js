@@ -1,6 +1,7 @@
 const Canvas = require('../models/Canvas');
 const CanvasElement = require('../models/CanvasElement');
 const Workspace = require('../models/Workspace');
+const User = require('../models/User');
 const { logActivity } = require('../utils/activityLogger');
 
 // Helper function to get readable element name
@@ -232,8 +233,70 @@ const deleteCanvasElement = async (req, res) => {
 
     // Get element name before deletion
     const elementName = getElementName(element);
+    const elementId = req.params.elementId;
+    const elementType = element.type;
+    const canvasId = element.canvas._id;
+    const workspaceId = workspace._id;
 
-    await CanvasElement.findByIdAndDelete(req.params.elementId);
+    await CanvasElement.findByIdAndDelete(elementId);
+
+    // If deleted element is a title, update users who had it as lastAccessedElement
+    if (elementType === 'title') {
+      try {
+        // Find all users who had this title as their lastAccessedElement
+        const users = await User.find({
+          [`workspacePreferences.${workspaceId}.lastAccessedElement`]: elementId
+        });
+
+        if (users.length > 0) {
+          // Get all remaining title elements in this canvas, sorted by createdAt DESC
+          const remainingTitles = await CanvasElement.find({
+            canvas: canvasId,
+            type: 'title',
+            _id: { $ne: elementId } // Exclude the deleted one
+          }).sort({ createdAt: -1 });
+
+          // For each affected user, set their lastAccessedElement to the newest remaining title
+          for (const user of users) {
+            if (remainingTitles.length > 0) {
+              // Set to the newest remaining title
+              const existingPrefs = user.workspacePreferences.get(workspaceId.toString()) || {};
+              user.workspacePreferences.set(workspaceId.toString(), {
+                ...existingPrefs,
+                lastAccessedElement: remainingTitles[0]._id,
+                lastAccessedAt: new Date()
+              });
+            } else {
+              // No more titles - clear lastAccessedElement
+              const existingPrefs = user.workspacePreferences.get(workspaceId.toString()) || {};
+              user.workspacePreferences.set(workspaceId.toString(), {
+                ...existingPrefs,
+                lastAccessedElement: null,
+                lastAccessedAt: new Date()
+              });
+            }
+            await user.save();
+          }
+
+          console.log(`Updated ${users.length} user(s) after deleting title element ${elementId}`);
+        }
+      } catch (fallbackError) {
+        // Log the error but don't fail the deletion
+        console.error('Error updating user lastAccessedElement after title deletion:', fallbackError);
+        await logActivity({
+          level: 'error',
+          message: 'Failed to update user preferences after title deletion',
+          module: 'canvasController',
+          user: req.user._id,
+          metadata: {
+            error: fallbackError.message,
+            deletedElement: elementId,
+            workspace: workspaceId
+          },
+          req
+        });
+      }
+    }
 
     // Log element deletion
     await logActivity({

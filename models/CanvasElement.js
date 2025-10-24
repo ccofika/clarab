@@ -8,7 +8,7 @@ const canvasElementSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['text', 'subtext', 'card', 'image', 'link', 'sticky-note', 'title', 'description', 'macro', 'example'],
+    enum: ['text', 'subtext', 'card', 'image', 'link', 'sticky-note', 'title', 'description', 'macro', 'example', 'wrapper'],
     required: true
   },
   position: {
@@ -227,6 +227,11 @@ const canvasElementSchema = new mongoose.Schema({
           default: Date.now
         }
       }]
+    }],
+    // For wrapper elements - child elements contained within
+    childElements: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'CanvasElement'
     }]
   },
   style: {

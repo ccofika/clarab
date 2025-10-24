@@ -160,38 +160,50 @@ const handleThreadReply = async (event, req) => {
 
     console.log('✅ Found KYC message:', kycMessage._id);
 
-    // Update KYC message with reply
+    // Check if this is the first reply (before updating)
+    const isFirstReply = !kycMessage.hasReceivedFirstReply;
+
+    // Update KYC message with reply (set to 'answered' status)
     console.log('💾 Updating KYC message with reply...');
-    await kycMessage.markAsResolved({
+    await kycMessage.markAsAnswered({
       ts: event.ts,
       user: event.user,
       text: event.text,
       userName: 'Slack User' // Will be updated if we fetch user info
     });
 
-    console.log('✅ KYC message marked as resolved');
+    console.log('✅ KYC message marked as answered (waiting for customer support to relay)');
 
-    // Get Socket.io instance
-    const io = req.app.get('io');
-    if (!io) {
-      console.error('❌ Socket.io not available');
-      return;
+    // Only emit socket event for FIRST reply
+    if (isFirstReply) {
+      // Get Socket.io instance
+      const io = req.app.get('io');
+      if (!io) {
+        console.error('❌ Socket.io not available');
+        return;
+      }
+
+      const eventData = {
+        threadTs: event.thread_ts,
+        reply: {
+          ts: event.ts,
+          user: event.user,
+          text: event.text,
+          timestamp: new Date()
+        },
+        messageId: kycMessage._id
+      };
+
+      console.log('📡 Emitting thread-reply event:', eventData);
+
+      // Emit thread-reply event to all connected clients
+      io.emit('thread-reply', eventData);
+
+      console.log('✅ First thread reply event emitted via Socket.io to all clients');
+      console.log(`🔌 Connected clients: ${io.engine.clientsCount}`);
+    } else {
+      console.log('ℹ️  Subsequent reply - not emitting socket event (card won\'t update)');
     }
-
-    // Emit thread-reply event to all connected clients
-    // Frontend will filter by threadTs
-    io.emit('thread-reply', {
-      threadTs: event.thread_ts,
-      reply: {
-        ts: event.ts,
-        user: event.user,
-        text: event.text,
-        timestamp: new Date()
-      },
-      messageId: kycMessage._id
-    });
-
-    console.log('✅ Thread reply event emitted via Socket.io');
 
   } catch (error) {
     console.error('❌ Error handling thread reply:', error);

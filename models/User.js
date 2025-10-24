@@ -66,8 +66,15 @@ const userSchema = new mongoose.Schema({
     of: {
       viewMode: {
         type: String,
-        enum: ['edit', 'view'],
+        enum: ['edit', 'view', 'post-view'],
         default: 'edit'
+      },
+      lastAccessedElement: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'CanvasElement'
+      },
+      lastAccessedAt: {
+        type: Date
       }
     },
     default: new Map()

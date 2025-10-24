@@ -1,6 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { updateWorkspacePreference, getWorkspacePreference } = require('../controllers/userController');
+const {
+  updateWorkspacePreference,
+  getWorkspacePreference,
+  updateLastAccessedElement
+} = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
 // Update workspace view mode preference
@@ -8,5 +12,8 @@ router.put('/preferences/workspace/:workspaceId', protect, updateWorkspacePrefer
 
 // Get workspace view mode preference
 router.get('/preferences/workspace/:workspaceId', protect, getWorkspacePreference);
+
+// Update last accessed element for a workspace
+router.put('/preferences/workspace/:workspaceId/last-accessed', protect, updateLastAccessedElement);
 
 module.exports = router;
