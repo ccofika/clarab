@@ -3,7 +3,8 @@ const router = express.Router();
 const {
   updateWorkspacePreference,
   getWorkspacePreference,
-  updateLastAccessedElement
+  updateLastAccessedElement,
+  markTutorialCompleted
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
@@ -15,5 +16,8 @@ router.get('/preferences/workspace/:workspaceId', protect, getWorkspacePreferenc
 
 // Update last accessed element for a workspace
 router.put('/preferences/workspace/:workspaceId/last-accessed', protect, updateLastAccessedElement);
+
+// Mark tutorial as completed
+router.post('/tutorial-completed', protect, markTutorialCompleted);
 
 module.exports = router;

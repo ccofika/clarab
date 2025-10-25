@@ -113,3 +113,24 @@ exports.updateLastAccessedElement = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Mark tutorial as completed
+exports.markTutorialCompleted = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.tutorialCompleted = true;
+    await user.save();
+
+    res.json({
+      message: 'Tutorial marked as completed successfully',
+      tutorialCompleted: true
+    });
+  } catch (error) {
+    console.error('Error marking tutorial as completed:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
