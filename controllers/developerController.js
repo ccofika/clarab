@@ -694,8 +694,6 @@ exports.getSecurityDashboard = async (req, res) => {
 // @access  Private (Developer/Admin only)
 exports.getRevokedTokens = async (req, res) => {
   try {
-    console.log('🚫 Developer accessing revoked tokens');
-
     const page = Math.max(1, parseInt(req.query.page) || 1);
     const limit = Math.min(parseInt(req.query.limit) || 50, 200);
     const skip = (page - 1) * limit;
@@ -805,8 +803,6 @@ exports.revokeUserTokens = async (req, res) => {
       ip: ipAddress
     });
 
-    console.log(`🚫 Admin ${req.user.name} revoked all tokens for user ${user.email}`);
-
     res.json({
       message: `All tokens revoked for user: ${user.name}`,
       user: {
@@ -864,8 +860,6 @@ exports.updateSecuritySettings = async (req, res) => {
       },
       ip: req.ip || req.connection.remoteAddress
     });
-
-    console.log(`⚙️  Security settings updated by ${req.user.name}`);
 
     res.json({
       message: 'Security settings updated successfully',

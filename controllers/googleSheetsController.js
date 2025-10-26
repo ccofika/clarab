@@ -70,7 +70,6 @@ const getSheetsClient = async (userId) => {
 
   // Handle token refresh automatically
   oauth2Client.on('tokens', async (tokens) => {
-    console.log('🔄 Refreshing Google tokens for user:', userId);
     if (tokens.refresh_token) {
       user.googleRefreshToken = tokens.refresh_token;
     }

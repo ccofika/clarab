@@ -12,7 +12,6 @@ const getSlackClient = async (userId) => {
     throw new Error('User not authenticated with Slack or missing access token');
   }
 
-  console.log('🔑 Creating Slack client for user:', userId);
   const client = new WebClient(user.slackAccessToken);
 
   return { client, user };
@@ -23,15 +22,9 @@ const getSlackClient = async (userId) => {
  */
 const lookupUserByEmail = async (client, email) => {
   try {
-    console.log('🔍 Looking up Slack user by email:', email);
     const result = await client.users.lookupByEmail({ email });
 
     if (result.ok && result.user) {
-      console.log('✅ Slack user found:', {
-        id: result.user.id,
-        name: result.user.name,
-        real_name: result.user.real_name
-      });
       return result.user;
     }
 
@@ -48,12 +41,9 @@ const lookupUserByEmail = async (client, email) => {
  */
 exports.checkAccess = async (req, res) => {
   try {
-    console.log('🔍 Checking Slack access for user:', req.user._id);
-
     const user = await User.findById(req.user._id).select('slackAccessToken slackUserId slackTeamId slackTeamName');
 
     if (!user || !user.slackAccessToken) {
-      console.log('❌ User does not have Slack access');
       return res.json({
         hasAccess: false,
         message: 'Not authenticated with Slack. Please log out and log back in.'
@@ -66,12 +56,6 @@ exports.checkAccess = async (req, res) => {
       const authTest = await client.auth.test();
 
       if (authTest.ok) {
-        console.log('✅ Slack access verified:', {
-          userId: authTest.user_id,
-          teamId: authTest.team_id,
-          teamName: authTest.team
-        });
-
         return res.json({
           hasAccess: true,
           message: 'Slack access verified successfully',
@@ -114,12 +98,7 @@ exports.sendDirectMessage = async (req, res) => {
       return res.status(400).json({ message: 'Recipient email and message are required' });
     }
 
-    console.log('📤 Sending Slack DM:', {
-      from: req.user._id,
-      to: recipientEmail,
-      messageLength: message.length
-    });
-
+    
     // Get Slack client for current user
     const { client, user } = await getSlackClient(req.user._id);
 
@@ -127,8 +106,7 @@ exports.sendDirectMessage = async (req, res) => {
     const recipient = await lookupUserByEmail(client, recipientEmail);
 
     // Open a DM channel with the recipient
-    console.log('💬 Opening DM channel with user:', recipient.id);
-    const conversation = await client.conversations.open({
+        const conversation = await client.conversations.open({
       users: recipient.id
     });
 
@@ -137,10 +115,8 @@ exports.sendDirectMessage = async (req, res) => {
     }
 
     const channelId = conversation.channel.id;
-    console.log('✅ DM channel opened:', channelId);
 
     // Send the message
-    console.log('📨 Sending message to channel:', channelId);
     const result = await client.chat.postMessage({
       channel: channelId,
       text: message
@@ -150,13 +126,7 @@ exports.sendDirectMessage = async (req, res) => {
       throw new Error('Failed to send Slack message');
     }
 
-    console.log('✅ Slack DM sent successfully:', {
-      ts: result.ts,
-      channel: result.channel
-    });
-
     // Save message to MongoDB
-    console.log('💾 Saving KYC message to database...');
     const kycMessage = await KYCMessage.create({
       senderId: req.user._id,
       recipientEmail: recipientEmail,
@@ -169,7 +139,6 @@ exports.sendDirectMessage = async (req, res) => {
       sentAt: new Date()
     });
 
-    console.log('✅ KYC message saved to database:', kycMessage._id);
 
     res.json({
       success: true,
@@ -210,21 +179,18 @@ exports.sendDirectMessage = async (req, res) => {
  */
 exports.getConversations = async (req, res) => {
   try {
-    console.log('🔍 Fetching Slack conversations for user:', req.user._id);
-
+    
     const { client, user } = await getSlackClient(req.user._id);
 
     // Get list of conversations
     const result = await client.conversations.list({
-      types: 'im', // Only direct messages
-      limit: 50
+      types: 'im' // Only direct messages
     });
 
     if (!result.ok) {
       throw new Error('Failed to fetch conversations');
     }
 
-    console.log('✅ Fetched', result.channels.length, 'DM conversations');
 
     res.json({
       success: true,
@@ -256,8 +222,7 @@ exports.getThreadReplies = async (req, res) => {
   try {
     const { channel, threadTs } = req.params;
 
-    console.log('🧵 Fetching thread replies:', { channel, threadTs });
-
+    
     const { client, user } = await getSlackClient(req.user._id);
 
     // Get thread replies
@@ -270,7 +235,6 @@ exports.getThreadReplies = async (req, res) => {
       throw new Error('Failed to fetch thread replies');
     }
 
-    console.log('✅ Fetched', result.messages.length, 'thread messages');
 
     res.json({
       success: true,
@@ -300,11 +264,9 @@ exports.getThreadReplies = async (req, res) => {
  */
 exports.getKYCMessages = async (req, res) => {
   try {
-    console.log('📋 Fetching KYC messages for user:', req.user._id);
-
+    
     const messages = await KYCMessage.getUserMessages(req.user._id);
 
-    console.log(`✅ Found ${messages.length} KYC messages`);
 
     res.json({
       success: true,
@@ -328,7 +290,6 @@ exports.markMessageAsResolved = async (req, res) => {
   try {
     const { id } = req.params;
 
-    console.log('✅ Marking KYC message as resolved:', id);
 
     // Find message and verify it belongs to current user
     const kycMessage = await KYCMessage.findOne({
@@ -356,13 +317,6 @@ exports.markMessageAsResolved = async (req, res) => {
     // Mark as resolved
     await kycMessage.markAsResolved();
 
-    console.log('✅ KYC message marked as resolved:', {
-      id: kycMessage._id,
-      username: kycMessage.username,
-      status: kycMessage.status,
-      resolvedAt: kycMessage.resolvedAt
-    });
-
     res.json({
       success: true,
       message: 'Message marked as resolved',
@@ -388,15 +342,13 @@ exports.markMessageAsResolved = async (req, res) => {
  */
 exports.cleanupLegacyMessages = async (req, res) => {
   try {
-    console.log('🧹 Cleaning up legacy KYC messages without username...');
-
+    
     // Find all messages without username field
     const legacyMessages = await KYCMessage.find({
       senderId: req.user._id,
       username: { $exists: false }
     });
 
-    console.log(`Found ${legacyMessages.length} legacy messages without username`);
 
     // Delete them
     const result = await KYCMessage.deleteMany({
@@ -404,7 +356,6 @@ exports.cleanupLegacyMessages = async (req, res) => {
       username: { $exists: false }
     });
 
-    console.log('✅ Deleted', result.deletedCount, 'legacy messages');
 
     res.json({
       success: true,
@@ -429,18 +380,11 @@ exports.checkThreadForUsername = async (req, res) => {
   try {
     const { username } = req.params;
 
-    console.log('🔍 Checking for existing thread with username:', username);
-
+    
     // Check database first for existing message
     const existingMessage = await KYCMessage.findByUsername(username);
 
     if (existingMessage) {
-      console.log('✅ Found existing thread in database:', {
-        threadTs: existingMessage.slackThreadTs,
-        sentAt: existingMessage.sentAt,
-        status: existingMessage.status
-      });
-
       return res.json({
         exists: true,
         thread: {
@@ -452,7 +396,6 @@ exports.checkThreadForUsername = async (req, res) => {
       });
     }
 
-    console.log('ℹ️  No existing thread found for username:', username);
     res.json({
       exists: false
     });
@@ -484,14 +427,7 @@ exports.sendKYCRequest = async (req, res) => {
       });
     }
 
-    console.log('📤 Sending KYC request:', {
-      from: req.user._id,
-      username,
-      to: targetEmail,
-      existingThread: !!existingThreadTs,
-      messageLength: message.length
-    });
-
+    
     // Get Slack client for current user
     const { client, user } = await getSlackClient(req.user._id);
 
@@ -499,8 +435,7 @@ exports.sendKYCRequest = async (req, res) => {
     const recipient = await lookupUserByEmail(client, targetEmail);
 
     // Open a DM channel with the recipient
-    console.log('💬 Opening DM channel with user:', recipient.id);
-    const conversation = await client.conversations.open({
+        const conversation = await client.conversations.open({
       users: recipient.id
     });
 
@@ -509,18 +444,12 @@ exports.sendKYCRequest = async (req, res) => {
     }
 
     const channelId = conversation.channel.id;
-    console.log('✅ DM channel opened:', channelId);
 
     // Format message: username - message
     const formattedMessage = `${username} - ${message}`;
 
     // Send message to DM (or as thread reply if existingThreadTs provided)
-    console.log('📨 Posting message to DM:', {
-      channel: channelId,
-      isThreadReply: !!existingThreadTs,
-      existingThreadTs: existingThreadTs
-    });
-
+    
     const result = await client.chat.postMessage({
       channel: channelId,
       text: formattedMessage,
@@ -531,26 +460,12 @@ exports.sendKYCRequest = async (req, res) => {
       throw new Error('Failed to send Slack message');
     }
 
-    console.log('✅ KYC request sent successfully:', {
-      newMessageTs: result.ts,
-      threadTs: result.thread_ts,
-      channel: result.channel,
-      existingThreadTs: existingThreadTs,
-      finalThreadTs: existingThreadTs || result.thread_ts || result.ts
-    });
 
     // Save message to MongoDB
     // IMPORTANT: If we're replying to existing thread, use that threadTs
     // Otherwise use what Slack returned (result.thread_ts or result.ts)
     const threadTsToSave = existingThreadTs || result.thread_ts || result.ts;
-    console.log('💾 Saving KYC message to database:', {
-      username: username,
-      slackThreadTs: threadTsToSave,
-      slackChannel: result.channel,
-      isReplyInThread: !!existingThreadTs || !!result.thread_ts,
-      usedExistingThread: !!existingThreadTs
-    });
-
+    
     const kycMessage = await KYCMessage.create({
       senderId: req.user._id,
       username: username,
@@ -564,12 +479,6 @@ exports.sendKYCRequest = async (req, res) => {
       sentAt: new Date()
     });
 
-    console.log('✅ KYC message saved to database:', {
-      _id: kycMessage._id,
-      username: kycMessage.username,
-      slackThreadTs: kycMessage.slackThreadTs,
-      sentAt: kycMessage.sentAt
-    });
 
     res.json({
       success: true,
@@ -577,16 +486,9 @@ exports.sendKYCRequest = async (req, res) => {
       slack: {
         ts: result.ts,
         channel: result.channel,
-        threadTs: threadTsToSave, // Use the same threadTs we saved to database
-        recipient: {
-          id: recipient.id,
-          name: recipient.real_name || recipient.name,
-          email: targetEmail
-        }
-      },
-      messageId: kycMessage._id
+        threadTs: threadTsToSave // Use the same threadTs we saved to database
+      }
     });
-
   } catch (error) {
     console.error('❌ Error sending KYC request:', error);
 
@@ -620,24 +522,12 @@ exports.getThreadMessages = async (req, res) => {
   try {
     const { threadTs } = req.params;
 
-    console.log('🧵 Fetching thread messages for threadTs:', threadTs);
-
+    
     // DIAGNOSTIC: Check how many messages exist with this threadTs
     const allMessagesWithThread = await KYCMessage.find({ slackThreadTs: threadTs })
       .sort({ sentAt: -1 })
       .select('_id username sentAt slackChannel status hasReceivedFirstReply')
       .lean();
-
-    console.log(`📊 Found ${allMessagesWithThread.length} total KYC messages with threadTs ${threadTs}:`,
-      allMessagesWithThread.map(m => ({
-        id: m._id,
-        username: m.username,
-        sentAt: m.sentAt,
-        channel: m.slackChannel,
-        status: m.status,
-        hasFirstReply: m.hasReceivedFirstReply
-      }))
-    );
 
     // Find ANY KYC message with this threadTs to get the channel
     const kycMessage = await KYCMessage.findByThread(threadTs);
@@ -650,21 +540,11 @@ exports.getThreadMessages = async (req, res) => {
       });
     }
 
-    console.log('✅ Found KYC message (using findByThread):', {
-      id: kycMessage._id,
-      channel: kycMessage.slackChannel,
-      username: kycMessage.username,
-      sentAt: kycMessage.sentAt
-    });
 
     const { client } = await getSlackClient(req.user._id);
 
     // Fetch thread replies from Slack
-    console.log('📡 Calling Slack API conversations.replies:', {
-      channel: kycMessage.slackChannel,
-      ts: threadTs
-    });
-
+    
     const result = await client.conversations.replies({
       channel: kycMessage.slackChannel,
       ts: threadTs
@@ -675,8 +555,6 @@ exports.getThreadMessages = async (req, res) => {
       throw new Error('Failed to fetch thread replies from Slack');
     }
 
-    console.log('✅ Slack returned', result.messages.length, 'total messages');
-    console.log('First message text preview:', result.messages[0]?.text?.substring(0, 50));
 
     // Get the user's Slack ID to identify messages from our app
     const { user } = await getSlackClient(req.user._id);
@@ -707,15 +585,11 @@ exports.getThreadMessages = async (req, res) => {
       return {
         text: displayText,
         originalText: msg.text, // Keep original for debugging
-        timestamp: new Date(parseFloat(msg.ts) * 1000),
-        user: msg.user,
-        userName: displayName,
-        isInitial: index === 0,
-        isFromOurApp: isFromOurApp
+        timestamp: msg.ts,
+        user: displayName,
+        isFirstMessage: index === 0
       };
     });
-
-    console.log('✅ Transformed', threadMessages.length, 'thread messages');
 
     res.json({
       success: true,

@@ -268,15 +268,6 @@ exports.login = async (req, res) => {
     res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, accessTokenOptions);
     res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
 
-    // Log cookie configuration for debugging
-    console.log('🍪 Login - Cookie Configuration:', {
-      accessTokenName: COOKIE_NAMES.ACCESS_TOKEN,
-      refreshTokenName: COOKIE_NAMES.REFRESH_TOKEN,
-      accessTokenOptions,
-      refreshTokenOptions,
-      nodeEnv: process.env.NODE_ENV
-    });
-
     logger.auth('login_success');
 
     // Log successful login
@@ -343,12 +334,10 @@ exports.getProfile = async (req, res) => {
 exports.googleCallback = async (req, res) => {
   try {
     const user = req.user;
-    console.log('🎯 googleCallback executing');
 
     // Generate access token and refresh token
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
-    console.log('🔑 Tokens generated successfully');
 
     // Get cookie options for logging
     const accessTokenOptions = getAccessTokenCookieOptions();
@@ -358,21 +347,10 @@ exports.googleCallback = async (req, res) => {
     res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, accessTokenOptions);
     res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
 
-    // Log cookie configuration
-    console.log('🍪 Google OAuth - Cookie Configuration:', {
-      accessTokenName: COOKIE_NAMES.ACCESS_TOKEN,
-      refreshTokenName: COOKIE_NAMES.REFRESH_TOKEN,
-      accessTokenOptions,
-      refreshTokenOptions,
-      nodeEnv: process.env.NODE_ENV
-    });
-
     // Redirect to frontend after successful Google login
     // Slack OAuth is now optional - user can connect later from settings
-    console.log('✅ Google login successful, redirecting to frontend');
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=${!!user.slackAccessToken}`;
-    console.log('🔀 Redirecting to frontend');
 
     res.redirect(redirectUrl);
   } catch (error) {
@@ -397,7 +375,6 @@ exports.slackOAuthInitiate = async (req, res) => {
     // Construct authorization URL with user_scope parameter
     const authorizationURL = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&user_scope=${userScopes}&redirect_uri=${encodeURIComponent(callbackURL)}`;
 
-    console.log('🔀 Redirecting to Slack authorization:', authorizationURL);
     res.redirect(authorizationURL);
   } catch (error) {
     console.error('❌ Slack OAuth initiate error:', error);
@@ -411,7 +388,6 @@ exports.slackOAuthInitiate = async (req, res) => {
 exports.slackCallback = async (req, res) => {
   try {
     const { code, error } = req.query;
-    console.log('🔄 Slack callback hit, query params:', { code: code ? 'received' : 'missing', error });
 
     if (error) {
       console.error('❌ Slack OAuth error:', error);
@@ -426,7 +402,6 @@ exports.slackCallback = async (req, res) => {
     }
 
     // Exchange code for token following Slack documentation
-    console.log('🔄 Exchanging code for token...');
     const axios = require('axios');
     const params = new URLSearchParams();
     params.append('code', code);
@@ -436,11 +411,6 @@ exports.slackCallback = async (req, res) => {
 
     const tokenResponse = await axios.post('https://slack.com/api/oauth.v2.access', params, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    });
-
-    console.log('📥 Token response received:', {
-      ok: tokenResponse.data.ok,
-      hasAuthedUser: !!tokenResponse.data.authed_user
     });
 
     if (!tokenResponse.data.ok) {
@@ -457,19 +427,11 @@ exports.slackCallback = async (req, res) => {
       return res.redirect(`${frontendURL}/login?error=slack_no_user_token`);
     }
 
-    console.log('✅ User token received:', {
-      userId: authedUser.id,
-      scope: authedUser.scope,
-      tokenType: authedUser.token_type
-    });
-
     // Get user email from Slack
     const userInfoResponse = await axios.get('https://slack.com/api/users.info', {
       params: { user: authedUser.id },
       headers: { Authorization: `Bearer ${authedUser.access_token}` }
     });
-
-    console.log('📋 User info response received');
 
     if (!userInfoResponse.data.ok || !userInfoResponse.data.user) {
       console.error('❌ Failed to get user info from Slack:', userInfoResponse.data.error);
@@ -478,7 +440,6 @@ exports.slackCallback = async (req, res) => {
     }
 
     const slackEmail = userInfoResponse.data.user?.profile?.email;
-    console.log('📧 Slack email received');
 
     // Check if email is from @mebit.io domain
     if (!slackEmail.endsWith('@mebit.io')) {
@@ -492,12 +453,9 @@ exports.slackCallback = async (req, res) => {
     let user = await User.findOne({ email: slackEmail });
 
     if (!user) {
-      console.warn('⚠️  User not found for Slack OAuth');
       const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${frontendURL}/login?error=user_not_found`);
     }
-
-    console.log('✅ User found:', user._id);
 
     // Update Slack tokens
     user.slackAccessToken = authedUser.access_token;
@@ -506,16 +464,9 @@ exports.slackCallback = async (req, res) => {
     user.slackTeamName = tokenResponse.data.team?.name;
     await user.save();
 
-    console.log('✅ Slack tokens saved:', {
-      slackUserId: user.slackUserId,
-      slackTeamId: user.slackTeamId,
-      slackTeamName: user.slackTeamName
-    });
-
     // Generate JWT tokens (same as Google callback)
     const accessToken = generateAccessToken(user._id);
     const refreshToken = await generateAndStoreRefreshToken(user._id, req);
-    console.log('🔑 JWT tokens generated for Slack callback');
 
     // Get cookie options
     const accessTokenOptions = getAccessTokenCookieOptions();
@@ -525,16 +476,9 @@ exports.slackCallback = async (req, res) => {
     res.cookie(COOKIE_NAMES.ACCESS_TOKEN, accessToken, accessTokenOptions);
     res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
 
-    console.log('🍪 Slack OAuth - Cookies set:', {
-      accessTokenName: COOKIE_NAMES.ACCESS_TOKEN,
-      refreshTokenName: COOKIE_NAMES.REFRESH_TOKEN,
-      nodeEnv: process.env.NODE_ENV
-    });
-
     // Redirect to frontend with success
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=true`;
-    console.log('🔀 Redirecting to frontend');
 
     res.redirect(redirectUrl);
   } catch (error) {
