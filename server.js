@@ -56,9 +56,11 @@ const corsOptions = {
 
     // Check if origin is in whitelist
     if (allowedOrigins.includes(origin)) {
+      console.log('✅ CORS allowed origin:', origin);
       callback(null, true);
     } else {
-      console.log('🚫 CORS blocked origin');
+      console.log('🚫 CORS blocked origin:', origin);
+      console.log('📋 Allowed origins:', allowedOrigins);
       callback(new Error(`CORS policy: Origin ${origin} is not allowed`));
     }
   },
