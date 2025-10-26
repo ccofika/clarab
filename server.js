@@ -9,9 +9,11 @@ const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const mongoSanitize = require('express-mongo-sanitize');
 const passport = require('passport');
+const jwt = require('jsonwebtoken');
 const configurePassport = require('./config/passport');
 const connectDB = require('./config/db');
 const seedAnnouncementsWorkspace = require('./utils/seedAnnouncements');
+const User = require('./models/User');
 
 // Connect to database
 connectDB().then(() => {
@@ -56,7 +58,7 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.log(`🚫 CORS blocked origin: ${origin}`);
+      console.log('🚫 CORS blocked origin');
       callback(new Error(`CORS policy: Origin ${origin} is not allowed`));
     }
   },
@@ -211,17 +213,58 @@ const io = new Server(server, {
 
 // Socket.io connection handler
 io.on('connection', (socket) => {
-  console.log('🔌 Socket.io client connected:', socket.id);
+  console.log('🔌 Socket.io client connected');
 
   socket.on('disconnect', () => {
-    console.log('🔌 Socket.io client disconnected:', socket.id);
+    console.log('🔌 Socket.io client disconnected');
   });
 
   // Handle user authentication for socket
-  socket.on('authenticate', (data) => {
-    console.log('🔐 Socket authenticated for user:', data.userId);
-    socket.userId = data.userId;
-    socket.join(`user:${data.userId}`);
+  socket.on('authenticate', async (data) => {
+    try {
+      // Validate token exists
+      if (!data.token) {
+        socket.emit('auth_error', { message: 'Authentication token required' });
+        socket.disconnect();
+        return;
+      }
+
+      // Verify JWT token
+      const decoded = jwt.verify(data.token, process.env.JWT_SECRET, {
+        algorithms: ['HS256']
+      });
+
+      // Verify user exists in database
+      const user = await User.findById(decoded.id).select('_id email role');
+      if (!user) {
+        socket.emit('auth_error', { message: 'User not found' });
+        socket.disconnect();
+        return;
+      }
+
+      // Set authenticated user ID from JWT (NOT from client data)
+      socket.userId = user._id.toString();
+      socket.userEmail = user.email;
+      socket.userRole = user.role;
+
+      // Join user's personal room
+      socket.join(`user:${socket.userId}`);
+
+      // Emit success
+      socket.emit('authenticated', {
+        userId: socket.userId,
+        message: 'Socket authenticated successfully'
+      });
+
+      console.log(`🔐 Socket authenticated for user: ${socket.userId}`);
+    } catch (error) {
+      console.error('❌ Socket authentication failed:', error.message);
+      socket.emit('auth_error', {
+        message: 'Authentication failed',
+        error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      });
+      socket.disconnect();
+    }
   });
 });
 

@@ -15,14 +15,14 @@ module.exports = function(passport) {
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        console.log('🔐 Google Strategy executing for profile:', profile.id);
+        console.log('🔐 Google Strategy executing');
 
         const email = profile.emails[0].value;
-        console.log('📧 Email from Google:', email);
+        console.log('📧 Email from Google received');
 
         // Check if email is from @mebit.io domain
         if (!email.endsWith('@mebit.io')) {
-          console.warn('⚠️  Email not from @mebit.io domain:', email);
+          console.warn('⚠️  Email not from @mebit.io domain');
           return done(null, false, { message: 'Only @mebit.io email addresses are allowed' });
         }
 
@@ -30,7 +30,7 @@ module.exports = function(passport) {
         let user = await User.findOne({ email });
 
         if (user) {
-          console.log('✅ Existing user found:', user._id);
+          console.log('✅ Existing user found');
           // Update googleId and tokens if not set
           if (!user.googleId) {
             user.googleId = profile.id;
@@ -59,7 +59,7 @@ module.exports = function(passport) {
 
         // Create default quick links for new user
         await createDefaultQuickLinks(user._id);
-        console.log('✅ New user created:', user._id);
+        console.log('✅ New user created');
 
         done(null, user);
       } catch (error) {
@@ -87,20 +87,15 @@ module.exports = function(passport) {
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        console.log('🔐 Slack Strategy executing for profile:', profile.id);
-        console.log('👤 Slack user info:', {
-          id: profile.user.id,
-          email: profile.user.email,
-          name: profile.user.name,
-          team: profile.team.id
-        });
+        console.log('🔐 Slack Strategy executing');
+        console.log('👤 Slack user info received');
 
         const email = profile.user.email;
-        console.log('📧 Email from Slack:', email);
+        console.log('📧 Email from Slack received');
 
         // Check if email is from @mebit.io domain
         if (!email.endsWith('@mebit.io')) {
-          console.warn('⚠️  Slack email not from @mebit.io domain:', email);
+          console.warn('⚠️  Slack email not from @mebit.io domain');
           return done(null, false, { message: 'Only @mebit.io email addresses are allowed' });
         }
 
@@ -108,11 +103,11 @@ module.exports = function(passport) {
         let user = await User.findOne({ email });
 
         if (!user) {
-          console.warn('⚠️  User not found for Slack OAuth:', email);
+          console.warn('⚠️  User not found for Slack OAuth');
           return done(null, false, { message: 'User not found. Please sign in with Google first.' });
         }
 
-        console.log('✅ Existing user found for Slack OAuth:', user._id);
+        console.log('✅ Existing user found for Slack OAuth');
 
         // Update Slack tokens and info
         user.slackAccessToken = accessToken;
@@ -121,7 +116,7 @@ module.exports = function(passport) {
         user.slackTeamName = profile.team.name;
 
         await user.save();
-        console.log('📝 Updated Slack tokens for user:', user._id);
+        console.log('📝 Updated Slack tokens');
 
         return done(null, user);
       } catch (error) {

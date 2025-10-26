@@ -108,7 +108,7 @@ const addTimingDelay = async () => {
 // Login User
 exports.login = async (req, res) => {
   try {
-    logger.auth('login_attempt', { email: req.body.email });
+    logger.auth('login_attempt');
     const { email, password } = req.body;
     const ipAddress = req.ip || req.connection.remoteAddress;
     const userAgent = req.get('user-agent') || '';
@@ -132,7 +132,7 @@ exports.login = async (req, res) => {
 
     // SECURITY: Step 3 - Check if user exists (after timing-sensitive operations)
     if (!user) {
-      logger.auth('login_failed_user_not_found', { email });
+      logger.auth('login_failed_user_not_found');
       await LoginAttempt.logAttempt(email, ipAddress, false, 'user_not_found', userAgent);
       await logActivity({
         level: 'warn',
@@ -147,7 +147,7 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    logger.auth('user_found', { userId: user._id, role: user.role });
+    logger.auth('user_found');
 
     // SECURITY: Step 4 - Check if account is locked (before password validation)
     if (user.isLocked) {
@@ -169,7 +169,7 @@ exports.login = async (req, res) => {
         req
       });
 
-      logger.auth('account_locked_attempt', { userId: user._id, lockTimeRemaining });
+      logger.auth('account_locked_attempt');
 
       // Add artificial delay before responding
       await addTimingDelay();
@@ -181,7 +181,7 @@ exports.login = async (req, res) => {
 
     // SECURITY: Step 5 - Check password validity (bcrypt comparison already done above)
     if (!isPasswordValid) {
-      logger.auth('password_mismatch', { userId: user._id });
+      logger.auth('password_mismatch');
 
       // Increment login attempts and potentially lock account
       await user.incLoginAttempts();
@@ -210,7 +210,7 @@ exports.login = async (req, res) => {
           req
         });
 
-        logger.auth('account_now_locked', { userId: user._id, attempts: user.loginAttempts });
+        logger.auth('account_now_locked');
 
         // Add artificial delay before responding
         await addTimingDelay();
@@ -246,7 +246,7 @@ exports.login = async (req, res) => {
 
     // Password is correct - proceed with successful login
 
-    logger.auth('password_match', { userId: user._id });
+    logger.auth('password_match');
 
     // Reset login attempts on successful login
     if (user.loginAttempts > 0 || user.lockUntil) {
@@ -277,7 +277,7 @@ exports.login = async (req, res) => {
       nodeEnv: process.env.NODE_ENV
     });
 
-    logger.auth('login_success', { userId: user._id });
+    logger.auth('login_success');
 
     // Log successful login
     await logActivity({
@@ -343,7 +343,7 @@ exports.getProfile = async (req, res) => {
 exports.googleCallback = async (req, res) => {
   try {
     const user = req.user;
-    console.log('🎯 googleCallback executing for user:', user._id, user.email);
+    console.log('🎯 googleCallback executing');
 
     // Generate access token and refresh token
     const accessToken = generateAccessToken(user._id);
@@ -372,7 +372,7 @@ exports.googleCallback = async (req, res) => {
     console.log('✅ Google login successful, redirecting to frontend');
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=${!!user.slackAccessToken}`;
-    console.log('🔀 Redirecting to:', redirectUrl);
+    console.log('🔀 Redirecting to frontend');
 
     res.redirect(redirectUrl);
   } catch (error) {
@@ -469,7 +469,7 @@ exports.slackCallback = async (req, res) => {
       headers: { Authorization: `Bearer ${authedUser.access_token}` }
     });
 
-    console.log('📋 User info response:', JSON.stringify(userInfoResponse.data, null, 2));
+    console.log('📋 User info response received');
 
     if (!userInfoResponse.data.ok || !userInfoResponse.data.user) {
       console.error('❌ Failed to get user info from Slack:', userInfoResponse.data.error);
@@ -478,11 +478,11 @@ exports.slackCallback = async (req, res) => {
     }
 
     const slackEmail = userInfoResponse.data.user?.profile?.email;
-    console.log('📧 Slack email:', slackEmail);
+    console.log('📧 Slack email received');
 
     // Check if email is from @mebit.io domain
     if (!slackEmail.endsWith('@mebit.io')) {
-      console.warn('⚠️  Slack email not from @mebit.io domain:', slackEmail);
+      console.warn('⚠️  Slack email not from @mebit.io domain');
       const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${frontendURL}/login?error=invalid_domain`);
     }
@@ -492,7 +492,7 @@ exports.slackCallback = async (req, res) => {
     let user = await User.findOne({ email: slackEmail });
 
     if (!user) {
-      console.warn('⚠️  User not found for Slack OAuth:', slackEmail);
+      console.warn('⚠️  User not found for Slack OAuth');
       const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
       return res.redirect(`${frontendURL}/login?error=user_not_found`);
     }
@@ -534,7 +534,7 @@ exports.slackCallback = async (req, res) => {
     // Redirect to frontend with success
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
     const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=true`;
-    console.log('🔀 Redirecting to frontend:', redirectUrl);
+    console.log('🔀 Redirecting to frontend');
 
     res.redirect(redirectUrl);
   } catch (error) {
