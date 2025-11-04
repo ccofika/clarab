@@ -158,6 +158,7 @@ const imageRoutes = require('./routes/imageRoutes');
 const developerRoutes = require('./routes/developerRoutes');
 const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
 const slackRoutes = require('./routes/slackRoutes');
+const qaRoutes = require('./routes/qaRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -170,6 +171,7 @@ app.use('/api/images', imageRoutes);
 app.use('/api/developer', developerRoutes); // Developer-only endpoints
 app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
 app.use('/api/slack', slackRoutes); // Slack integration
+app.use('/api/qa', qaRoutes); // QA Manager endpoints
 
 // Root route
 app.get('/', (req, res) => {

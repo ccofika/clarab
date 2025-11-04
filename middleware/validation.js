@@ -151,6 +151,215 @@ const schemas = {
       gridEnabled: Joi.boolean().optional(),
       snapToGrid: Joi.boolean().optional()
     }).optional()
+  }),
+
+  // QA Manager - Agent validation
+  createAgent: Joi.object({
+    name: Joi.string()
+      .min(1)
+      .max(200)
+      .trim()
+      .required()
+      .messages({
+        'string.min': 'Agent name is required',
+        'string.max': 'Agent name must not exceed 200 characters',
+        'any.required': 'Agent name is required'
+      }),
+    position: Joi.string()
+      .max(100)
+      .trim()
+      .optional()
+      .allow('')
+      .messages({
+        'string.max': 'Position must not exceed 100 characters'
+      }),
+    team: Joi.string()
+      .max(100)
+      .trim()
+      .optional()
+      .allow('')
+      .messages({
+        'string.max': 'Team must not exceed 100 characters'
+      }),
+    goalMinDate: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Goal min date must be a valid ISO date'
+      }),
+    goalMaxDate: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Goal max date must be a valid ISO date'
+      }),
+    periodStart: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Period start must be a valid ISO date'
+      }),
+    periodEnd: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Period end must be a valid ISO date'
+      }),
+    isActive: Joi.boolean()
+      .optional()
+  }),
+
+  updateAgent: Joi.object({
+    name: Joi.string()
+      .min(1)
+      .max(200)
+      .trim()
+      .optional(),
+    position: Joi.string()
+      .max(100)
+      .trim()
+      .optional()
+      .allow(''),
+    team: Joi.string()
+      .max(100)
+      .trim()
+      .optional()
+      .allow(''),
+    goalMinDate: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    goalMaxDate: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    periodStart: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    periodEnd: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    isActive: Joi.boolean()
+      .optional()
+  }),
+
+  // QA Manager - Ticket validation
+  createTicket: Joi.object({
+    agent: Joi.string()
+      .pattern(/^[0-9a-fA-F]{24}$/)
+      .required()
+      .messages({
+        'string.pattern.base': 'Invalid agent ID format',
+        'any.required': 'Agent is required'
+      }),
+    ticketId: Joi.string()
+      .trim()
+      .max(100)
+      .required()
+      .messages({
+        'string.max': 'Ticket ID must not exceed 100 characters',
+        'any.required': 'Ticket ID is required'
+      }),
+    shortDescription: Joi.string()
+      .trim()
+      .max(500)
+      .optional()
+      .allow('')
+      .messages({
+        'string.max': 'Short description must not exceed 500 characters'
+      }),
+    status: Joi.string()
+      .valid('Pending', 'In Progress', 'Completed')
+      .optional()
+      .messages({
+        'any.only': 'Status must be Pending, In Progress, or Completed'
+      }),
+    dateEntered: Joi.date()
+      .iso()
+      .optional()
+      .messages({
+        'date.format': 'Date entered must be a valid ISO date'
+      }),
+    notes: Joi.string()
+      .trim()
+      .optional()
+      .allow(''),
+    qualityScorePercent: Joi.number()
+      .min(0)
+      .max(100)
+      .optional()
+      .allow(null)
+      .messages({
+        'number.min': 'Quality score must be at least 0',
+        'number.max': 'Quality score must not exceed 100'
+      }),
+    timeStarted: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Time started must be a valid ISO date'
+      }),
+    timeCompleted: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
+      .messages({
+        'date.format': 'Time completed must be a valid ISO date'
+      })
+  }),
+
+  updateTicket: Joi.object({
+    agent: Joi.string()
+      .pattern(/^[0-9a-fA-F]{24}$/)
+      .optional()
+      .messages({
+        'string.pattern.base': 'Invalid agent ID format'
+      }),
+    ticketId: Joi.string()
+      .trim()
+      .max(100)
+      .optional(),
+    shortDescription: Joi.string()
+      .trim()
+      .max(500)
+      .optional()
+      .allow(''),
+    status: Joi.string()
+      .valid('Pending', 'In Progress', 'Completed')
+      .optional(),
+    dateEntered: Joi.date()
+      .iso()
+      .optional(),
+    notes: Joi.string()
+      .trim()
+      .optional()
+      .allow(''),
+    qualityScorePercent: Joi.number()
+      .min(0)
+      .max(100)
+      .optional()
+      .allow(null),
+    timeStarted: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    timeCompleted: Joi.date()
+      .iso()
+      .optional()
+      .allow(null),
+    isArchived: Joi.boolean()
+      .optional(),
+    archivedDate: Joi.date()
+      .iso()
+      .optional()
+      .allow(null)
   })
 };
 
