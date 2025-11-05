@@ -4,9 +4,17 @@ const {
   updateWorkspacePreference,
   getWorkspacePreference,
   updateLastAccessedElement,
-  markTutorialCompleted
+  markTutorialCompleted,
+  getUserStatistics,
+  resetTutorial
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
+
+// Get user account statistics
+router.get('/statistics', protect, getUserStatistics);
+
+// Reset tutorial
+router.post('/tutorial-reset', protect, resetTutorial);
 
 // Update workspace view mode preference
 router.put('/preferences/workspace/:workspaceId', protect, updateWorkspacePreference);

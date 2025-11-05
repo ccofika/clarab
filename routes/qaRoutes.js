@@ -15,6 +15,7 @@ const {
   createTicket,
   updateTicket,
   deleteTicket,
+  gradeTicket,
   archiveTicket,
   bulkArchiveTickets,
   restoreTicket,
@@ -23,6 +24,12 @@ const {
   // Export controllers
   exportMaestro
 } = require('../controllers/qaController');
+
+const {
+  // AI controllers
+  getSuggestedFeedback,
+  getAgentAnalysis
+} = require('../controllers/aiController');
 
 // Authorization middleware - only allow specific emails
 const qaAuthorization = (req, res, next) => {
@@ -74,6 +81,7 @@ router.route('/tickets/:id')
 
 // Ticket actions
 router.post('/tickets/bulk-archive', bulkArchiveTickets);
+router.post('/tickets/:id/grade', gradeTicket);
 router.post('/tickets/:id/archive', archiveTicket);
 router.post('/tickets/:id/restore', restoreTicket);
 
@@ -88,5 +96,12 @@ router.get('/dashboard/stats', getDashboardStats);
 // ============================================
 
 router.post('/export/maestro/:agentId', exportMaestro);
+
+// ============================================
+// AI ROUTES
+// ============================================
+
+router.post('/ai/suggest-feedback', getSuggestedFeedback);
+router.get('/ai/analyze-agent/:agentId', getAgentAnalysis);
 
 module.exports = router;

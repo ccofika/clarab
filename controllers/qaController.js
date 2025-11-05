@@ -12,15 +12,32 @@ const ExcelJS = require('exceljs');
 // @access  Private
 exports.getAllAgents = async (req, res) => {
   try {
+    const userId = req.user._id;
     const agents = await Agent.find().sort({ name: 1 });
 
-    // Get ticket counts for each agent
+    // Get ticket counts for each agent (only for current user's tickets)
     const agentsWithStats = await Promise.all(
       agents.map(async (agent) => {
-        const totalTickets = await Ticket.countDocuments({ agent: agent._id, isArchived: false });
-        const completedTickets = await Ticket.countDocuments({ agent: agent._id, status: 'Completed', isArchived: false });
+        const totalTickets = await Ticket.countDocuments({
+          agent: agent._id,
+          isArchived: false,
+          createdBy: userId
+        });
+        const gradedTickets = await Ticket.countDocuments({
+          agent: agent._id,
+          status: 'Graded',
+          isArchived: false,
+          createdBy: userId
+        });
         const avgScore = await Ticket.aggregate([
-          { $match: { agent: agent._id, isArchived: false, qualityScorePercent: { $ne: null } } },
+          {
+            $match: {
+              agent: agent._id,
+              isArchived: false,
+              qualityScorePercent: { $ne: null },
+              createdBy: userId
+            }
+          },
           { $group: { _id: null, avgScore: { $avg: '$qualityScorePercent' } } }
         ]);
 
@@ -28,7 +45,7 @@ exports.getAllAgents = async (req, res) => {
           ...agent.toObject(),
           stats: {
             totalTickets,
-            completedTickets,
+            gradedTickets,
             avgScore: avgScore.length > 0 ? Math.round(avgScore[0].avgScore * 100) / 100 : null
           }
         };
@@ -47,15 +64,19 @@ exports.getAllAgents = async (req, res) => {
 // @access  Private
 exports.getAgent = async (req, res) => {
   try {
+    const userId = req.user._id;
     const agent = await Agent.findById(req.params.id);
 
     if (!agent) {
       return res.status(404).json({ message: 'Agent not found' });
     }
 
-    // Get agent's tickets
-    const tickets = await Ticket.find({ agent: agent._id, isArchived: false })
-      .sort({ dateEntered: -1 });
+    // Get agent's tickets for current user only
+    const tickets = await Ticket.find({
+      agent: agent._id,
+      isArchived: false,
+      createdBy: userId
+    }).sort({ dateEntered: -1 });
 
     res.json({ agent, tickets });
   } catch (error) {
@@ -162,18 +183,27 @@ exports.getAllTickets = async (req, res) => {
     // Build filter object
     const filter = {};
 
+    // IMPORTANT: If viewing active tickets (not archived), filter by current user
+    // If viewing archived tickets, show all tickets (for all QA agents)
+    if (isArchived !== undefined) {
+      filter.isArchived = isArchived === 'true';
+
+      // Only filter by user if viewing active tickets
+      if (isArchived === 'false') {
+        filter.createdBy = req.user._id;
+      }
+    } else {
+      // Default: show only active tickets for current user
+      filter.isArchived = false;
+      filter.createdBy = req.user._id;
+    }
+
     if (agent) {
       filter.agent = agent;
     }
 
     if (status) {
       filter.status = { $in: status.split(',') };
-    }
-
-    if (isArchived !== undefined) {
-      filter.isArchived = isArchived === 'true';
-    } else {
-      filter.isArchived = false; // Default: show only active tickets
     }
 
     if (dateFrom || dateTo) {
@@ -291,6 +321,22 @@ exports.updateTicket = async (req, res) => {
       }
     }
 
+    // Get current ticket to check status change
+    const currentTicket = await Ticket.findById(req.params.id);
+    if (!currentTicket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // If status is being changed to 'Graded' and gradedDate is not set, set it now
+    if (req.body.status === 'Graded' && currentTicket.status !== 'Graded' && !currentTicket.gradedDate) {
+      req.body.gradedDate = new Date();
+    }
+
+    // If status is being changed from 'Graded' to 'Selected', clear gradedDate
+    if (req.body.status === 'Selected' && currentTicket.status === 'Graded') {
+      req.body.gradedDate = null;
+    }
+
     const ticket = await Ticket.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -298,10 +344,6 @@ exports.updateTicket = async (req, res) => {
     )
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');
-
-    if (!ticket) {
-      return res.status(404).json({ message: 'Ticket not found' });
-    }
 
     logger.info(`Ticket updated: ${ticket.ticketId} by user ${req.user.email}`);
     res.json(ticket);
@@ -329,6 +371,46 @@ exports.deleteTicket = async (req, res) => {
     res.json({ message: 'Ticket deleted successfully' });
   } catch (error) {
     logger.error('Error deleting ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Grade ticket (change status to Graded and set quality score)
+// @route   POST /api/qa/tickets/:id/grade
+// @access  Private
+exports.gradeTicket = async (req, res) => {
+  try {
+    const { qualityScorePercent } = req.body;
+
+    // Validate quality score
+    if (qualityScorePercent === undefined || qualityScorePercent === null) {
+      return res.status(400).json({ message: 'Quality score is required' });
+    }
+
+    if (qualityScorePercent < 0 || qualityScorePercent > 100) {
+      return res.status(400).json({ message: 'Quality score must be between 0 and 100' });
+    }
+
+    const ticket = await Ticket.findByIdAndUpdate(
+      req.params.id,
+      {
+        status: 'Graded',
+        qualityScorePercent,
+        gradedDate: new Date()
+      },
+      { new: true, runValidators: true }
+    )
+    .populate('agent', 'name team position')
+    .populate('createdBy', 'name email');
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    logger.info(`Ticket graded: ${ticket.ticketId} with score ${qualityScorePercent}% by user ${req.user.email}`);
+    res.json(ticket);
+  } catch (error) {
+    logger.error('Error grading ticket:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -428,40 +510,52 @@ exports.restoreTicket = async (req, res) => {
 // @access  Private
 exports.getDashboardStats = async (req, res) => {
   try {
-    const totalAgents = await Agent.countDocuments({ isActive: true });
-    const totalTickets = await Ticket.countDocuments({ isArchived: false });
-    const completedTickets = await Ticket.countDocuments({ status: 'Completed', isArchived: false });
-    const pendingTickets = await Ticket.countDocuments({ status: 'Pending', isArchived: false });
-    const inProgressTickets = await Ticket.countDocuments({ status: 'In Progress', isArchived: false });
+    // Get current user's tickets only (not archived)
+    const userId = req.user._id;
 
-    // Average quality score
+    const totalAgents = await Agent.countDocuments({ isActive: true });
+    const totalTickets = await Ticket.countDocuments({ isArchived: false, createdBy: userId });
+    const gradedTickets = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId });
+    const selectedTickets = await Ticket.countDocuments({ status: 'Selected', isArchived: false, createdBy: userId });
+
+    // Average quality score for current user's tickets
     const avgScoreResult = await Ticket.aggregate([
-      { $match: { isArchived: false, qualityScorePercent: { $ne: null } } },
+      { $match: { isArchived: false, qualityScorePercent: { $ne: null }, createdBy: userId } },
       { $group: { _id: null, avgScore: { $avg: '$qualityScorePercent' } } }
     ]);
     const avgScore = avgScoreResult.length > 0 ? Math.round(avgScoreResult[0].avgScore * 100) / 100 : null;
 
-    // Tickets this week
+    // Tickets this week for current user
     const weekStart = new Date();
     weekStart.setDate(weekStart.getDate() - weekStart.getDay()); // Sunday
     weekStart.setHours(0, 0, 0, 0);
 
     const ticketsThisWeek = await Ticket.countDocuments({
       dateEntered: { $gte: weekStart },
-      isArchived: false
+      isArchived: false,
+      createdBy: userId
     });
 
-    // Top performers (agents with highest avg score)
-    const topPerformers = await Ticket.aggregate([
-      { $match: { isArchived: false, qualityScorePercent: { $ne: null } } },
+    // Agent stats for current user's tickets (top performers based on user's evaluations)
+    const agentStats = await Ticket.aggregate([
+      { $match: { isArchived: false, createdBy: userId } },
       { $group: {
           _id: '$agent',
-          avgScore: { $avg: '$qualityScorePercent' },
-          ticketCount: { $sum: 1 }
+          ticketCount: { $sum: 1 },
+          gradedCount: {
+            $sum: { $cond: [{ $eq: ['$status', 'Graded'] }, 1, 0] }
+          },
+          avgScore: {
+            $avg: {
+              $cond: [
+                { $ne: ['$qualityScorePercent', null] },
+                '$qualityScorePercent',
+                null
+              ]
+            }
+          }
         }
       },
-      { $sort: { avgScore: -1 } },
-      { $limit: 5 },
       { $lookup: {
           from: 'agents',
           localField: '_id',
@@ -474,21 +568,23 @@ exports.getDashboardStats = async (req, res) => {
           _id: 0,
           agentId: '$_id',
           agentName: '$agentInfo.name',
-          avgScore: { $round: ['$avgScore', 2] },
-          ticketCount: 1
+          ticketCount: 1,
+          gradedCount: 1,
+          avgScore: { $round: ['$avgScore', 2] }
         }
-      }
+      },
+      { $sort: { avgScore: -1 } }
     ]);
 
     res.json({
       totalAgents,
       totalTickets,
-      completedTickets,
-      pendingTickets,
-      inProgressTickets,
+      gradedTickets,
+      selectedTickets,
       avgScore,
       ticketsThisWeek,
-      topPerformers
+      agentStats,
+      avgQualityScore: avgScore // Added for compatibility with frontend
     });
   } catch (error) {
     logger.error('Error fetching dashboard stats:', error);
@@ -507,6 +603,7 @@ exports.exportMaestro = async (req, res) => {
   try {
     const { agentId } = req.params;
     const { weekStart, weekEnd } = req.body;
+    const userId = req.user._id;
 
     // Verify agent exists
     const agent = await Agent.findById(agentId);
@@ -514,10 +611,11 @@ exports.exportMaestro = async (req, res) => {
       return res.status(404).json({ message: 'Agent not found' });
     }
 
-    // Get tickets for the agent in the specified week
+    // Get tickets for the agent in the specified week (only current user's tickets)
     const filter = {
       agent: agentId,
-      isArchived: false
+      isArchived: false,
+      createdBy: userId
     };
 
     if (weekStart && weekEnd) {
@@ -535,33 +633,36 @@ exports.exportMaestro = async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('Maestro Unos');
 
-    // Add header
-    worksheet.columns = [
-      { header: 'Ticket ID', key: 'ticketId', width: 20 }
-    ];
+    // Set column width (no header)
+    worksheet.getColumn(1).width = 20;
 
-    // Add ticket IDs
+    // Add ticket IDs directly (no header row)
     tickets.forEach(ticket => {
-      worksheet.addRow({ ticketId: ticket.ticketId });
+      worksheet.addRow([ticket.ticketId]);
     });
 
-    // Style the header
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFD9E1F2' }
+    // Format dates for filename
+    const formatDate = (dateString) => {
+      const date = new Date(dateString);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = date.getFullYear();
+      return `${day}.${month}.${year}`;
     };
 
-    // Set response headers
-    const fileName = `Maestro_${agent.name.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const dateFromFormatted = weekStart ? formatDate(weekStart) : '';
+    const dateToFormatted = weekEnd ? formatDate(weekEnd) : '';
+    const agentNameClean = agent.name.replace(/\s+/g, '_');
+
+    const fileName = `${agentNameClean}_${dateFromFormatted}_${dateToFormatted}.xlsx`;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
     // Write to response
     await workbook.xlsx.write(res);
 
-    logger.info(`Maestro export generated for agent ${agent.name} by user ${req.user.email}`);
+    logger.info(`Maestro export generated: ${fileName} for agent ${agent.name} (${tickets.length} tickets) by user ${req.user.email}`);
     res.end();
   } catch (error) {
     logger.error('Error exporting Maestro:', error);

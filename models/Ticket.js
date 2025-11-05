@@ -20,14 +20,18 @@ const ticketSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Pending', 'In Progress', 'Completed'],
-    default: 'Pending'
+    enum: ['Selected', 'Graded'],
+    default: 'Selected'
   },
   dateEntered: {
     type: Date,
     default: Date.now
   },
   notes: {
+    type: String,
+    trim: true
+  },
+  feedback: {
     type: String,
     trim: true
   },
@@ -40,10 +44,7 @@ const ticketSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
-  timeStarted: {
-    type: Date
-  },
-  timeCompleted: {
+  gradedDate: {
     type: Date
   },
   isArchived: {
@@ -68,21 +69,23 @@ ticketSchema.index({ status: 1 });
 ticketSchema.index({ dateEntered: -1 });
 ticketSchema.index({ isArchived: 1 });
 ticketSchema.index({ ticketId: 1 });
+ticketSchema.index({ createdBy: 1 });
 ticketSchema.index({ agent: 1, status: 1 });
 ticketSchema.index({ agent: 1, isArchived: 1 });
+ticketSchema.index({ createdBy: 1, isArchived: 1 }); // For user-specific ticket queries
+ticketSchema.index({ createdBy: 1, agent: 1, isArchived: 1 }); // For user-agent-archived queries
 
-// Pre-save middleware to update lastModified
+// Pre-save middleware to update lastModified and set gradedDate
 ticketSchema.pre('save', function(next) {
   this.lastModified = new Date();
+
+  // If status is being changed to 'Graded' and gradedDate is not set, set it now
+  if (this.isModified('status') && this.status === 'Graded' && !this.gradedDate) {
+    this.gradedDate = new Date();
+  }
+
   next();
 });
-
-// Method to calculate completion time in minutes
-ticketSchema.methods.getCompletionTimeMinutes = function() {
-  if (!this.timeStarted || !this.timeCompleted) return null;
-  const diff = this.timeCompleted - this.timeStarted;
-  return Math.round(diff / (1000 * 60)); // Convert ms to minutes
-};
 
 // Method to get quality grade
 ticketSchema.methods.getQualityGrade = function() {

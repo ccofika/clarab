@@ -275,10 +275,10 @@ const schemas = {
         'string.max': 'Short description must not exceed 500 characters'
       }),
     status: Joi.string()
-      .valid('Pending', 'In Progress', 'Completed')
+      .valid('Selected', 'Graded')
       .optional()
       .messages({
-        'any.only': 'Status must be Pending, In Progress, or Completed'
+        'any.only': 'Status must be Selected or Graded'
       }),
     dateEntered: Joi.date()
       .iso()
@@ -290,28 +290,18 @@ const schemas = {
       .trim()
       .optional()
       .allow(''),
+    feedback: Joi.string()
+      .trim()
+      .optional()
+      .allow(''),
     qualityScorePercent: Joi.number()
       .min(0)
       .max(100)
       .optional()
-      .allow(null)
+      .allow(null, '')
       .messages({
         'number.min': 'Quality score must be at least 0',
         'number.max': 'Quality score must not exceed 100'
-      }),
-    timeStarted: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Time started must be a valid ISO date'
-      }),
-    timeCompleted: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Time completed must be a valid ISO date'
       })
   }),
 
@@ -332,8 +322,11 @@ const schemas = {
       .optional()
       .allow(''),
     status: Joi.string()
-      .valid('Pending', 'In Progress', 'Completed')
-      .optional(),
+      .valid('Selected', 'Graded')
+      .optional()
+      .messages({
+        'any.only': 'Status must be Selected or Graded'
+      }),
     dateEntered: Joi.date()
       .iso()
       .optional(),
@@ -341,16 +334,16 @@ const schemas = {
       .trim()
       .optional()
       .allow(''),
+    feedback: Joi.string()
+      .trim()
+      .optional()
+      .allow(''),
     qualityScorePercent: Joi.number()
       .min(0)
       .max(100)
       .optional()
-      .allow(null),
-    timeStarted: Joi.date()
-      .iso()
-      .optional()
-      .allow(null),
-    timeCompleted: Joi.date()
+      .allow(null, ''),
+    gradedDate: Joi.date()
       .iso()
       .optional()
       .allow(null),

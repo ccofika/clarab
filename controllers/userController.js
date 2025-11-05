@@ -1,4 +1,82 @@
 const User = require('../models/User');
+const Workspace = require('../models/Workspace');
+const CanvasElement = require('../models/CanvasElement');
+const ActivityLog = require('../models/ActivityLog');
+
+// Get user account statistics
+exports.getUserStatistics = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Count workspaces where user is owner or member
+    const workspaceCount = await Workspace.countDocuments({
+      $or: [
+        { owner: userId },
+        { members: { $elemMatch: { user: userId } } }
+      ]
+    });
+
+    // Count total elements created by user
+    const elementCount = await CanvasElement.countDocuments({ createdBy: userId });
+
+    // Count login activities (from last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const loginCount = await ActivityLog.countDocuments({
+      user: userId,
+      module: 'auth',
+      message: { $regex: /login/i },
+      createdAt: { $gte: thirtyDaysAgo }
+    });
+
+    // Get last login from activity logs
+    const lastLoginLog = await ActivityLog.findOne({
+      user: userId,
+      module: 'auth',
+      message: { $regex: /login/i }
+    }).sort({ createdAt: -1 });
+
+    res.json({
+      workspaceCount,
+      elementCount,
+      loginCount,
+      lastLogin: lastLoginLog ? lastLoginLog.createdAt : null,
+      memberSince: user.createdAt,
+      email: user.email,
+      name: user.name
+    });
+  } catch (error) {
+    console.error('Error getting user statistics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Reset tutorial (set tutorialCompleted to false)
+exports.resetTutorial = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    user.tutorialCompleted = false;
+    await user.save();
+
+    res.json({
+      message: 'Tutorial reset successfully',
+      tutorialCompleted: false
+    });
+  } catch (error) {
+    console.error('Error resetting tutorial:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
 
 // Update workspace view mode preference
 exports.updateWorkspacePreference = async (req, res) => {
