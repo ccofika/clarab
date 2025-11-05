@@ -181,20 +181,6 @@ const schemas = {
       .messages({
         'string.max': 'Team must not exceed 100 characters'
       }),
-    goalMinDate: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Goal min date must be a valid ISO date'
-      }),
-    goalMaxDate: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Goal max date must be a valid ISO date'
-      }),
     periodStart: Joi.date()
       .iso()
       .optional()
@@ -208,9 +194,7 @@ const schemas = {
       .allow(null)
       .messages({
         'date.format': 'Period end must be a valid ISO date'
-      }),
-    isActive: Joi.boolean()
-      .optional()
+      })
   }),
 
   updateAgent: Joi.object({
@@ -229,14 +213,6 @@ const schemas = {
       .trim()
       .optional()
       .allow(''),
-    goalMinDate: Joi.date()
-      .iso()
-      .optional()
-      .allow(null),
-    goalMaxDate: Joi.date()
-      .iso()
-      .optional()
-      .allow(null),
     periodStart: Joi.date()
       .iso()
       .optional()
@@ -244,9 +220,7 @@ const schemas = {
     periodEnd: Joi.date()
       .iso()
       .optional()
-      .allow(null),
-    isActive: Joi.boolean()
-      .optional()
+      .allow(null)
   }),
 
   // QA Manager - Ticket validation

@@ -18,21 +18,11 @@ const agentSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, 'Team cannot exceed 100 characters']
   },
-  goalMinDate: {
-    type: Date
-  },
-  goalMaxDate: {
-    type: Date
-  },
   periodStart: {
     type: Date
   },
   periodEnd: {
     type: Date
-  },
-  isActive: {
-    type: Boolean,
-    default: true
   }
 }, {
   timestamps: true
@@ -40,7 +30,6 @@ const agentSchema = new mongoose.Schema({
 
 // Indexes for performance
 agentSchema.index({ name: 1 });
-agentSchema.index({ isActive: 1 });
 agentSchema.index({ team: 1 });
 
 // Virtual for ticket count (populated when needed)
