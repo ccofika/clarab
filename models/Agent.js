@@ -5,7 +5,6 @@ const agentSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Agent name is required'],
     trim: true,
-    unique: true,
     maxlength: [200, 'Name cannot exceed 200 characters']
   },
   position: {
@@ -23,6 +22,11 @@ const agentSchema = new mongoose.Schema({
   },
   periodEnd: {
     type: Date
+  },
+  createdBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: true
   }
 }, {
   timestamps: true
@@ -31,6 +35,9 @@ const agentSchema = new mongoose.Schema({
 // Indexes for performance
 agentSchema.index({ name: 1 });
 agentSchema.index({ team: 1 });
+agentSchema.index({ createdBy: 1 });
+// Compound index to ensure unique agent names per user
+agentSchema.index({ name: 1, createdBy: 1 }, { unique: true });
 
 // Virtual for ticket count (populated when needed)
 agentSchema.virtual('ticketCount', {

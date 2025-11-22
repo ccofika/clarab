@@ -13,7 +13,8 @@ const ExcelJS = require('exceljs');
 exports.getAllAgents = async (req, res) => {
   try {
     const userId = req.user._id;
-    const agents = await Agent.find().sort({ name: 1 });
+    // Filter agents by current user
+    const agents = await Agent.find({ createdBy: userId }).sort({ name: 1 });
 
     // Get ticket counts for each agent (only for current user's tickets)
     const agentsWithStats = await Promise.all(
@@ -65,7 +66,8 @@ exports.getAllAgents = async (req, res) => {
 exports.getAgent = async (req, res) => {
   try {
     const userId = req.user._id;
-    const agent = await Agent.findById(req.params.id);
+    // Find agent only if it belongs to current user
+    const agent = await Agent.findOne({ _id: req.params.id, createdBy: userId });
 
     if (!agent) {
       return res.status(404).json({ message: 'Agent not found' });
@@ -90,12 +92,15 @@ exports.getAgent = async (req, res) => {
 // @access  Private
 exports.createAgent = async (req, res) => {
   try {
-    const agent = await Agent.create(req.body);
+    const agent = await Agent.create({
+      ...req.body,
+      createdBy: req.user._id
+    });
     logger.info(`Agent created: ${agent.name} by user ${req.user.email}`);
     res.status(201).json(agent);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'Agent with this name already exists' });
+      return res.status(400).json({ message: 'You already have an agent with this name' });
     }
     logger.error('Error creating agent:', error);
     res.status(500).json({ message: 'Server error' });
@@ -107,8 +112,9 @@ exports.createAgent = async (req, res) => {
 // @access  Private
 exports.updateAgent = async (req, res) => {
   try {
-    const agent = await Agent.findByIdAndUpdate(
-      req.params.id,
+    // Update agent only if it belongs to current user
+    const agent = await Agent.findOneAndUpdate(
+      { _id: req.params.id, createdBy: req.user._id },
       req.body,
       { new: true, runValidators: true }
     );
@@ -121,7 +127,7 @@ exports.updateAgent = async (req, res) => {
     res.json(agent);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'Agent with this name already exists' });
+      return res.status(400).json({ message: 'You already have an agent with this name' });
     }
     logger.error('Error updating agent:', error);
     res.status(500).json({ message: 'Server error' });
@@ -133,14 +139,18 @@ exports.updateAgent = async (req, res) => {
 // @access  Private
 exports.deleteAgent = async (req, res) => {
   try {
-    const agent = await Agent.findById(req.params.id);
+    // Find agent only if it belongs to current user
+    const agent = await Agent.findOne({ _id: req.params.id, createdBy: req.user._id });
 
     if (!agent) {
       return res.status(404).json({ message: 'Agent not found' });
     }
 
-    // Check if agent has tickets
-    const ticketCount = await Ticket.countDocuments({ agent: agent._id });
+    // Check if agent has tickets (only check current user's tickets)
+    const ticketCount = await Ticket.countDocuments({
+      agent: agent._id,
+      createdBy: req.user._id
+    });
     if (ticketCount > 0) {
       return res.status(400).json({
         message: `Cannot delete agent with ${ticketCount} associated ticket(s). Please delete or reassign tickets first.`
@@ -282,10 +292,10 @@ exports.getTicket = async (req, res) => {
 // @access  Private
 exports.createTicket = async (req, res) => {
   try {
-    // Check if agent exists
-    const agent = await Agent.findById(req.body.agent);
+    // Check if agent exists and belongs to current user
+    const agent = await Agent.findOne({ _id: req.body.agent, createdBy: req.user._id });
     if (!agent) {
-      return res.status(400).json({ message: 'Invalid agent ID' });
+      return res.status(400).json({ message: 'Invalid agent ID or agent does not belong to you' });
     }
 
     const ticket = await Ticket.create({
@@ -313,11 +323,11 @@ exports.createTicket = async (req, res) => {
 // @access  Private
 exports.updateTicket = async (req, res) => {
   try {
-    // If agent is being updated, check if it exists
+    // If agent is being updated, check if it exists and belongs to current user
     if (req.body.agent) {
-      const agent = await Agent.findById(req.body.agent);
+      const agent = await Agent.findOne({ _id: req.body.agent, createdBy: req.user._id });
       if (!agent) {
-        return res.status(400).json({ message: 'Invalid agent ID' });
+        return res.status(400).json({ message: 'Invalid agent ID or agent does not belong to you' });
       }
     }
 
@@ -513,7 +523,7 @@ exports.getDashboardStats = async (req, res) => {
     // Get current user's tickets only (not archived)
     const userId = req.user._id;
 
-    const totalAgents = await Agent.countDocuments({ isActive: true });
+    const totalAgents = await Agent.countDocuments({ createdBy: userId });
     const totalTickets = await Ticket.countDocuments({ isArchived: false, createdBy: userId });
     const gradedTickets = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId });
     const selectedTickets = await Ticket.countDocuments({ status: 'Selected', isArchived: false, createdBy: userId });
