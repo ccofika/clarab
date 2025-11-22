@@ -64,13 +64,12 @@ Respond in JSON format:
 }`;
 
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-nano-2025-08-07',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.7,
-      max_tokens: 500,
+      max_completion_tokens: 1000,
       response_format: { type: 'json_object' }
     });
 
@@ -139,13 +138,12 @@ Respond in JSON format:
 }`;
 
     const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+      model: 'gpt-5-nano-2025-08-07',
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
       ],
-      temperature: 0.7,
-      max_tokens: 600,
+      max_completion_tokens: 1200,
       response_format: { type: 'json_object' }
     });
 

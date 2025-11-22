@@ -349,6 +349,16 @@ const canvasElementSchema = new mongoose.Schema({
   lastEditedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
+  },
+  // AI-powered search: OpenAI text embedding vector (1536 dimensions)
+  embedding: {
+    type: [Number],
+    default: null
+  },
+  // Track if embedding needs regeneration (content changed)
+  embeddingOutdated: {
+    type: Boolean,
+    default: true
   }
 }, {
   timestamps: true
