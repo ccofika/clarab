@@ -22,7 +22,11 @@ const {
   // Dashboard controllers
   getDashboardStats,
   // Export controllers
-  exportMaestro
+  exportMaestro,
+  // AI Search controllers
+  aiSemanticSearch,
+  generateTicketEmbeddingEndpoint,
+  generateAllTicketEmbeddings
 } = require('../controllers/qaController');
 
 const {
@@ -103,5 +107,10 @@ router.post('/export/maestro/:agentId', exportMaestro);
 
 router.post('/ai/suggest-feedback', getSuggestedFeedback);
 router.get('/ai/analyze-agent/:agentId', getAgentAnalysis);
+
+// AI Search routes
+router.get('/ai-search', aiSemanticSearch);
+router.post('/tickets/:id/generate-embedding', generateTicketEmbeddingEndpoint);
+router.post('/generate-all-embeddings', generateAllTicketEmbeddings);
 
 module.exports = router;

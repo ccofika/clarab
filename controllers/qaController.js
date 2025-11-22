@@ -2,6 +2,10 @@ const Agent = require('../models/Agent');
 const Ticket = require('../models/Ticket');
 const logger = require('../utils/logger');
 const ExcelJS = require('exceljs');
+const {
+  generateEmbedding,
+  cosineSimilarity
+} = require('../utils/openai');
 
 // ============================================
 // AGENT CONTROLLERS
@@ -184,6 +188,11 @@ exports.getAllTickets = async (req, res) => {
       scoreMin,
       scoreMax,
       search,
+      category,
+      priority,
+      tags,
+      weekNumber,
+      weekYear,
       page = 1,
       limit = 50,
       sortBy = 'dateEntered',
@@ -228,11 +237,31 @@ exports.getAllTickets = async (req, res) => {
       if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
     }
 
+    // New filters
+    if (category) {
+      filter.category = { $in: category.split(',') };
+    }
+
+    if (priority) {
+      filter.priority = { $in: priority.split(',') };
+    }
+
+    if (tags) {
+      filter.tags = { $in: tags.split(',') };
+    }
+
+    if (weekNumber && weekYear) {
+      filter.weekNumber = parseInt(weekNumber);
+      filter.weekYear = parseInt(weekYear);
+    }
+
     if (search) {
       filter.$or = [
         { ticketId: { $regex: search, $options: 'i' } },
         { shortDescription: { $regex: search, $options: 'i' } },
-        { notes: { $regex: search, $options: 'i' } }
+        { notes: { $regex: search, $options: 'i' } },
+        { feedback: { $regex: search, $options: 'i' } },
+        { tags: { $regex: search, $options: 'i' } }
       ];
     }
 
@@ -306,6 +335,17 @@ exports.createTicket = async (req, res) => {
     const populatedTicket = await Ticket.findById(ticket._id)
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email');
+
+    // Generate AI embedding in background (don't await to avoid blocking response)
+    generateTicketEmbedding(populatedTicket)
+      .then(embedding => {
+        if (embedding) {
+          ticket.embedding = embedding;
+          ticket.embeddingOutdated = false;
+          return ticket.save();
+        }
+      })
+      .catch(err => console.error('Error generating ticket embedding:', err));
 
     logger.info(`Ticket created: ${ticket.ticketId} by user ${req.user.email}`);
     res.status(201).json(populatedTicket);
@@ -676,6 +716,238 @@ exports.exportMaestro = async (req, res) => {
     res.end();
   } catch (error) {
     logger.error('Error exporting Maestro:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// AI SEARCH CONTROLLERS
+// ============================================
+
+// Helper function to generate ticket embedding
+const generateTicketEmbedding = async (ticket) => {
+  try {
+    // Combine all searchable text from the ticket
+    const textParts = [];
+
+    if (ticket.ticketId) textParts.push(`Ticket ID: ${ticket.ticketId}`);
+    if (ticket.shortDescription) textParts.push(`Description: ${ticket.shortDescription}`);
+    if (ticket.notes) textParts.push(`Notes: ${ticket.notes}`);
+    if (ticket.feedback) textParts.push(`Feedback: ${ticket.feedback}`);
+    if (ticket.category) textParts.push(`Category: ${ticket.category}`);
+    if (ticket.priority) textParts.push(`Priority: ${ticket.priority}`);
+    if (ticket.tags && ticket.tags.length > 0) textParts.push(`Tags: ${ticket.tags.join(', ')}`);
+    if (ticket.status) textParts.push(`Status: ${ticket.status}`);
+
+    // Get agent info if populated
+    if (ticket.agent) {
+      if (typeof ticket.agent === 'object' && ticket.agent.name) {
+        textParts.push(`Agent: ${ticket.agent.name}`);
+        if (ticket.agent.team) textParts.push(`Team: ${ticket.agent.team}`);
+      }
+    }
+
+    const combinedText = textParts.join(' | ');
+
+    if (!combinedText.trim()) {
+      return null;
+    }
+
+    const embedding = await generateEmbedding(combinedText);
+    return embedding;
+  } catch (error) {
+    console.error('Error generating ticket embedding:', error);
+    return null;
+  }
+};
+
+// @desc    AI-powered semantic search for tickets
+// @route   GET /api/qa/ai-search
+// @access  Private
+exports.aiSemanticSearch = async (req, res) => {
+  try {
+    const {
+      query,
+      isArchived,
+      agent,
+      status,
+      category,
+      priority,
+      dateFrom,
+      dateTo,
+      scoreMin,
+      scoreMax,
+      limit = 50
+    } = req.query;
+
+    if (!query || query.trim().length === 0) {
+      return res.json([]);
+    }
+
+    // Generate embedding for search query
+    const queryEmbedding = await generateEmbedding(query);
+
+    if (!queryEmbedding) {
+      return res.status(400).json({ message: 'Could not generate query embedding' });
+    }
+
+    // Build filter object
+    const filter = {
+      embedding: { $exists: true, $ne: null }
+    };
+
+    // Archive filter
+    if (isArchived !== undefined) {
+      filter.isArchived = isArchived === 'true';
+
+      // Only filter by user if viewing active tickets
+      if (isArchived === 'false') {
+        filter.createdBy = req.user._id;
+      }
+    } else {
+      // Default: show only active tickets for current user
+      filter.isArchived = false;
+      filter.createdBy = req.user._id;
+    }
+
+    // Additional filters
+    if (agent) filter.agent = agent;
+    if (status) filter.status = { $in: status.split(',') };
+    if (category) filter.category = { $in: category.split(',') };
+    if (priority) filter.priority = { $in: priority.split(',') };
+
+    if (dateFrom || dateTo) {
+      filter.dateEntered = {};
+      if (dateFrom) filter.dateEntered.$gte = new Date(dateFrom);
+      if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
+    }
+
+    if (scoreMin !== undefined || scoreMax !== undefined) {
+      filter.qualityScorePercent = {};
+      if (scoreMin !== undefined) filter.qualityScorePercent.$gte = parseFloat(scoreMin);
+      if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
+    }
+
+    // Fetch tickets with embeddings
+    const tickets = await Ticket.find(filter)
+      .select('+embedding')
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email')
+      .lean();
+
+    // Calculate similarity scores
+    const results = tickets.map(ticket => {
+      const similarity = cosineSimilarity(queryEmbedding, ticket.embedding);
+      return {
+        ...ticket,
+        relevanceScore: Math.round(similarity * 100),
+        embedding: undefined // Remove embedding from response
+      };
+    });
+
+    // Sort by relevance and filter by minimum threshold
+    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    const filteredResults = results.filter(r => r.relevanceScore > 40).slice(0, parseInt(limit));
+
+    res.json(filteredResults);
+  } catch (error) {
+    logger.error('AI search error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Generate embedding for a single ticket
+// @route   POST /api/qa/tickets/:id/generate-embedding
+// @access  Private
+exports.generateTicketEmbeddingEndpoint = async (req, res) => {
+  try {
+    const ticket = await Ticket.findById(req.params.id)
+      .populate('agent', 'name team position');
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Generate embedding
+    const embedding = await generateTicketEmbedding(ticket);
+
+    if (embedding) {
+      ticket.embedding = embedding;
+      ticket.embeddingOutdated = false;
+      await ticket.save();
+      logger.info(`Embedding generated for ticket ${ticket.ticketId} by user ${req.user.email}`);
+      return res.json({ message: 'Embedding generated successfully', hasEmbedding: true });
+    } else {
+      return res.json({ message: 'No content to embed', hasEmbedding: false });
+    }
+  } catch (error) {
+    logger.error('Error generating ticket embedding:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Generate embeddings for all tickets (batch operation)
+// @route   POST /api/qa/generate-all-embeddings
+// @access  Private
+exports.generateAllTicketEmbeddings = async (req, res) => {
+  try {
+    const { force } = req.body;
+    const userId = req.user._id;
+
+    // Build query for tickets without embeddings or outdated
+    const query = { createdBy: userId };
+
+    if (!force) {
+      query.$or = [
+        { embedding: null },
+        { embedding: { $exists: false } },
+        { embeddingOutdated: true }
+      ];
+    }
+
+    const tickets = await Ticket.find(query).populate('agent', 'name team position');
+
+    let processed = 0;
+    let errors = 0;
+
+    // Process in batches to avoid rate limits
+    const batchSize = 20;
+    for (let i = 0; i < tickets.length; i += batchSize) {
+      const batch = tickets.slice(i, i + batchSize);
+
+      await Promise.all(
+        batch.map(async (ticket) => {
+          try {
+            const embedding = await generateTicketEmbedding(ticket);
+            if (embedding) {
+              ticket.embedding = embedding;
+              ticket.embeddingOutdated = false;
+              await ticket.save();
+              processed++;
+            }
+          } catch (error) {
+            console.error(`Error processing ticket ${ticket._id}:`, error);
+            errors++;
+          }
+        })
+      );
+
+      // Small delay between batches to respect rate limits
+      if (i + batchSize < tickets.length) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    logger.info(`Batch embedding generation: ${processed} processed, ${errors} errors by user ${req.user.email}`);
+
+    res.json({
+      message: 'Embedding generation complete',
+      total: tickets.length,
+      processed,
+      errors
+    });
+  } catch (error) {
+    logger.error('Error generating embeddings:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

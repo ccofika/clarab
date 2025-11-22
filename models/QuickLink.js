@@ -16,6 +16,41 @@ const linkSchema = new mongoose.Schema({
     enum: ['copy', 'open'],
     default: 'copy',
   },
+  description: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  favicon: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  customIcon: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  isPinned: {
+    type: Boolean,
+    default: false,
+  },
+  clicks: {
+    type: Number,
+    default: 0,
+  },
+  lastClicked: {
+    type: Date,
+    default: null,
+  },
+  tags: [{
+    type: String,
+    trim: true,
+  }],
+  order: {
+    type: Number,
+    default: 0,
+  },
   createdAt: {
     type: Date,
     default: Date.now,
@@ -33,7 +68,45 @@ const quickLinkSchema = new mongoose.Schema({
     required: true,
     trim: true,
   },
+  description: {
+    type: String,
+    trim: true,
+    default: '',
+  },
+  color: {
+    type: String,
+    trim: true,
+    default: '#3B82F6', // blue-600
+  },
+  icon: {
+    type: String,
+    trim: true,
+    default: 'Folder',
+  },
   links: [linkSchema],
+  order: {
+    type: Number,
+    default: 0,
+  },
+  isPrivate: {
+    type: Boolean,
+    default: true,
+  },
+  sharedWith: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+    },
+    permission: {
+      type: String,
+      enum: ['view', 'edit'],
+      default: 'view',
+    },
+    sharedAt: {
+      type: Date,
+      default: Date.now,
+    },
+  }],
   createdAt: {
     type: Date,
     default: Date.now,
