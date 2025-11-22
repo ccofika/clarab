@@ -35,16 +35,6 @@ const {
   getAgentAnalysis
 } = require('../controllers/aiController');
 
-const {
-  // Analytics controllers
-  getAnalytics,
-  // AI Assistant controllers
-  aiAssistant,
-  getAISessions,
-  getAISession,
-  deleteAISession
-} = require('../controllers/qaAnalyticsController');
-
 // Authorization middleware - only allow specific emails
 const qaAuthorization = (req, res, next) => {
   const allowedEmails = [
@@ -122,24 +112,5 @@ router.get('/ai/analyze-agent/:agentId', getAgentAnalysis);
 router.get('/ai-search', aiSemanticSearch);
 router.post('/tickets/:id/generate-embedding', generateTicketEmbeddingEndpoint);
 router.post('/generate-all-embeddings', generateAllTicketEmbeddings);
-
-// ============================================
-// ANALYTICS ROUTES
-// ============================================
-
-router.get('/analytics', getAnalytics);
-
-// ============================================
-// AI ASSISTANT ROUTES
-// ============================================
-
-router.post('/ai-assistant', aiAssistant);
-
-router.route('/ai-sessions')
-  .get(getAISessions);
-
-router.route('/ai-sessions/:id')
-  .get(getAISession)
-  .delete(deleteAISession);
 
 module.exports = router;

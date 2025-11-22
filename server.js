@@ -236,7 +236,7 @@ io.on('connection', (socket) => {
       });
 
       // Verify user exists in database
-      const user = await User.findById(decoded.id).select('_id email role');
+      const user = await User.findById(decoded.id).select('_id name email role');
       if (!user) {
         socket.emit('auth_error', { message: 'User not found' });
         socket.disconnect();
@@ -245,6 +245,7 @@ io.on('connection', (socket) => {
 
       // Set authenticated user ID from JWT (NOT from client data)
       socket.userId = user._id.toString();
+      socket.userName = user.name;
       socket.userEmail = user.email;
       socket.userRole = user.role;
 
@@ -254,10 +255,11 @@ io.on('connection', (socket) => {
       // Emit success
       socket.emit('authenticated', {
         userId: socket.userId,
+        userName: user.name,
         message: 'Socket authenticated successfully'
       });
 
-      console.log(`🔐 Socket authenticated for user: ${socket.userId}`);
+      console.log(`🔐 Socket authenticated for user: ${user.name} (${socket.userId})`);
     } catch (error) {
       console.error('❌ Socket authentication failed:', error.message);
       socket.emit('auth_error', {
@@ -268,6 +270,9 @@ io.on('connection', (socket) => {
     }
   });
 });
+
+// Load workspace-specific socket handlers
+require('./sockets/workspaceHandlers')(io);
 
 // Make io available to routes
 app.set('io', io);

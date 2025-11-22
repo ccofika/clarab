@@ -6,7 +6,11 @@ const {
   updateLastAccessedElement,
   markTutorialCompleted,
   getUserStatistics,
-  resetTutorial
+  resetTutorial,
+  toggleFavoriteWorkspace,
+  getFavoriteWorkspaces,
+  trackRecentWorkspace,
+  getRecentWorkspaces
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
@@ -27,5 +31,17 @@ router.put('/preferences/workspace/:workspaceId/last-accessed', protect, updateL
 
 // Mark tutorial as completed
 router.post('/tutorial-completed', protect, markTutorialCompleted);
+
+// Toggle workspace favorite status
+router.post('/favorites/workspace/:workspaceId', protect, toggleFavoriteWorkspace);
+
+// Get favorite workspaces
+router.get('/favorites/workspaces', protect, getFavoriteWorkspaces);
+
+// Track recent workspace access
+router.post('/recent/workspace/:workspaceId', protect, trackRecentWorkspace);
+
+// Get recent workspaces
+router.get('/recent/workspaces', protect, getRecentWorkspaces);
 
 module.exports = router;

@@ -83,6 +83,20 @@ const userSchema = new mongoose.Schema({
     },
     default: new Map()
   },
+  favoriteWorkspaces: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Workspace'
+  }],
+  recentWorkspaces: [{
+    workspace: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Workspace'
+    },
+    lastAccessed: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   // Account lockout fields
   loginAttempts: {
     type: Number,

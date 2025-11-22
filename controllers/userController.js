@@ -212,3 +212,143 @@ exports.markTutorialCompleted = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Toggle workspace favorite status
+exports.toggleFavoriteWorkspace = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if workspace exists
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    // Check if workspace is already favorited
+    const isFavorited = user.favoriteWorkspaces.includes(workspaceId);
+
+    if (isFavorited) {
+      // Remove from favorites
+      user.favoriteWorkspaces = user.favoriteWorkspaces.filter(
+        id => id.toString() !== workspaceId
+      );
+    } else {
+      // Add to favorites
+      user.favoriteWorkspaces.push(workspaceId);
+    }
+
+    await user.save();
+
+    res.json({
+      message: isFavorited ? 'Workspace removed from favorites' : 'Workspace added to favorites',
+      isFavorited: !isFavorited,
+      favoriteWorkspaces: user.favoriteWorkspaces
+    });
+  } catch (error) {
+    console.error('Error toggling favorite workspace:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Get favorite workspaces
+exports.getFavoriteWorkspaces = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id)
+      .populate({
+        path: 'favoriteWorkspaces',
+        populate: [
+          { path: 'owner', select: 'name email' },
+          { path: 'members.user', select: 'name email' }
+        ]
+      });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json(user.favoriteWorkspaces || []);
+  } catch (error) {
+    console.error('Error getting favorite workspaces:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Track recent workspace access
+exports.trackRecentWorkspace = async (req, res) => {
+  try {
+    const { workspaceId } = req.params;
+
+    const user = await User.findById(req.user._id);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Check if workspace exists
+    const workspace = await Workspace.findById(workspaceId);
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    // Remove workspace if it already exists in recent list
+    user.recentWorkspaces = user.recentWorkspaces.filter(
+      item => item.workspace.toString() !== workspaceId
+    );
+
+    // Add to beginning of recent list
+    user.recentWorkspaces.unshift({
+      workspace: workspaceId,
+      lastAccessed: new Date()
+    });
+
+    // Keep only last 10 recent workspaces
+    if (user.recentWorkspaces.length > 10) {
+      user.recentWorkspaces = user.recentWorkspaces.slice(0, 10);
+    }
+
+    await user.save();
+
+    res.json({
+      message: 'Recent workspace tracked successfully',
+      recentWorkspaces: user.recentWorkspaces
+    });
+  } catch (error) {
+    console.error('Error tracking recent workspace:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Get recent workspaces
+exports.getRecentWorkspaces = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id)
+      .populate({
+        path: 'recentWorkspaces.workspace',
+        populate: [
+          { path: 'owner', select: 'name email' },
+          { path: 'members.user', select: 'name email' }
+        ]
+      });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Filter out null workspaces (in case some were deleted)
+    const recentWorkspaces = user.recentWorkspaces
+      .filter(item => item.workspace !== null)
+      .map(item => ({
+        ...item.workspace.toObject(),
+        lastAccessed: item.lastAccessed
+      }));
+
+    res.json(recentWorkspaces);
+  } catch (error) {
+    console.error('Error getting recent workspaces:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

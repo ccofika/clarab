@@ -356,6 +356,18 @@ Available element types: text, subtext, card, image, link, sticky-note, title, d
 
     const assistantMessage = response.choices[0].message.content;
 
+    // Validate that we got a non-empty response
+    if (!assistantMessage || assistantMessage.trim().length === 0) {
+      console.warn('AI returned empty message, using fallback');
+      return {
+        message: hasResults
+          ? `I found ${resultsCount} results for you!`
+          : "I couldn't find any matching results. Try adjusting your search terms.",
+        suggestedFilters: null,
+        suggestedQuery: null
+      };
+    }
+
     // Try to extract any suggested actions from the response
     const suggestions = {
       message: assistantMessage,
@@ -382,11 +394,113 @@ Available element types: text, subtext, card, image, link, sticky-note, title, d
   }
 };
 
+/**
+ * QA Assistant - specialized for QA ticket analysis and management
+ * @param {string} userMessage - User's message
+ * @param {Array} conversationHistory - Previous messages
+ * @param {Array} tickets - Full ticket data with all fields
+ * @param {Object} context - Additional context
+ * @returns {Promise<Object>} - AI response
+ */
+const qaAssistant = async (userMessage, conversationHistory = [], tickets = [], context = {}) => {
+  try {
+    const ticketsData = tickets.map((t, idx) => ({
+      number: idx + 1,
+      id: t._id?.toString(),
+      ticketId: t.ticketId,
+      agent: t.agent?.name || 'Unknown',
+      dateEntered: t.dateEntered,
+      status: t.status,
+      category: t.category,
+      priority: t.priority,
+      qualityScore: t.qualityScorePercent,
+      notes: t.notes,
+      feedback: t.feedback,
+      shortDescription: t.shortDescription
+    }));
+
+    const systemPrompt = `You are a QA metrics assistant specialized in analyzing quality assurance tickets and agent performance.
+
+You have access to ticket data with these fields:
+- ticketId: Unique ticket identifier
+- agent: Agent name who handled the ticket
+- dateEntered: When ticket was created
+- status: Current status (Graded, Pending, etc.)
+- category: Ticket category
+- priority: Ticket priority
+- qualityScore: Quality score percentage (0-100)
+- notes: Internal notes added to the ticket
+- feedback: Feedback provided for the ticket
+- shortDescription: Brief description of the ticket
+
+CAPABILITIES:
+1. Analyze agent performance (average scores, ticket counts, trends)
+2. Compare multiple tickets or agents
+3. Extract and combine specific fields (e.g., merge feedback from multiple tickets)
+4. Search within ticket notes and feedback
+5. Provide statistical summaries
+6. Answer questions about ticket data
+
+IMPORTANT INSTRUCTIONS:
+- When user asks for specific data (notes, feedback, descriptions), provide the COMPLETE, UNEDITED text
+- When user asks to "combine" or "merge" data, concatenate all requested fields together
+- When user asks for analysis, provide detailed insights with specific numbers and examples
+- When user asks to paste/show something, output the EXACT text without summarizing
+- Be conversational but precise
+- If you don't have enough data, say so clearly
+
+Current context:
+- Total tickets available: ${ticketsData.length}
+- User request: Analyze and respond based on the ticket data provided below`;
+
+    const ticketsJson = JSON.stringify(ticketsData, null, 2);
+
+    const messages = [
+      { role: 'system', content: systemPrompt },
+      ...conversationHistory,
+      {
+        role: 'user',
+        content: `${userMessage}\n\n--- TICKET DATA ---\n${ticketsJson}`
+      }
+    ];
+
+    const response = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: messages,
+      max_completion_tokens: 3000 // Increased for longer responses
+    });
+
+    const assistantMessage = response.choices[0].message.content;
+
+    if (!assistantMessage || assistantMessage.trim().length === 0) {
+      console.warn('QA Assistant returned empty message');
+      return {
+        message: ticketsData.length > 0
+          ? `I have ${ticketsData.length} tickets but couldn't generate a proper analysis. Please try rephrasing your question.`
+          : "I don't have any ticket data to analyze.",
+        suggestedFilters: null
+      };
+    }
+
+    return {
+      message: assistantMessage,
+      suggestedFilters: null
+    };
+  } catch (error) {
+    console.error('Error in QA assistant:', error);
+    return {
+      message: "I encountered an error while analyzing the tickets. Please try again.",
+      suggestedFilters: null
+    };
+  }
+};
+
 module.exports = {
   generateEmbedding,
   generateElementEmbedding,
   extractElementText,
   cosineSimilarity,
   parseNaturalLanguageQuery,
-  aiSearchAssistant
+  aiSearchAssistant,
+  qaAssistant
 };
