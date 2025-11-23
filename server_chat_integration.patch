@@ -1,0 +1,34 @@
+# Server.js Chat Integration Patch
+# Apply these changes to server.js manually if automated edits fail
+
+## 1. Add chat routes require statement (after line 161):
+const chatRoutes = require('./routes/chatRoutes');
+
+## 2. Add chat routes usage (after line 174):
+app.use('/api/chat', chatRoutes); // Chat endpoints
+
+## 3. Add chat socket handlers (inside authenticate event, after line 262):
+      // Load chat handlers after authentication
+      const chatHandlers = require('./sockets/chatHandlers');
+      chatHandlers(io, socket);
+
+# Complete code block for reference:
+
+```javascript
+// Around line 160-162
+const slackRoutes = require('./routes/slackRoutes');
+const qaRoutes = require('./routes/qaRoutes');
+const chatRoutes = require('./routes/chatRoutes'); // ADD THIS LINE
+
+// Around line 172-176
+app.use('/api/slack', slackRoutes); // Slack integration
+app.use('/api/qa', qaRoutes); // QA Manager endpoints
+app.use('/api/chat', chatRoutes); // Chat endpoints // ADD THIS LINE
+
+// Around line 262-264 (inside authenticate socket event)
+      console.log(`🔐 Socket authenticated for user: ${user.name} (${socket.userId})`);
+
+      // Load chat handlers after authentication  // ADD THESE 3 LINES
+      const chatHandlers = require('./sockets/chatHandlers');
+      chatHandlers(io, socket);
+```

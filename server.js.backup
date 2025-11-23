@@ -262,10 +262,6 @@ io.on('connection', (socket) => {
       });
 
       console.log(`🔐 Socket authenticated for user: ${user.name} (${socket.userId})`);
-
-      // Load chat handlers after authentication
-      const chatHandlers = require('./sockets/chatHandlers');
-      chatHandlers(io, socket);
     } catch (error) {
       console.error('❌ Socket authentication failed:', error.message);
       socket.emit('auth_error', {

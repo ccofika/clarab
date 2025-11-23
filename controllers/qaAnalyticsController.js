@@ -247,11 +247,11 @@ exports.aiAssistant = async (req, res) => {
         .find(msg => msg.role === 'assistant' && msg.searchResults && msg.searchResults.length > 0);
 
       if (lastAssistantMsg && lastAssistantMsg.searchResults) {
-        // Reload those tickets
+        // Reload those tickets (include both user's tickets and archived tickets)
         const ticketIds = lastAssistantMsg.searchResults;
         const tickets = await Ticket.find({
-          _id: { $in: ticketIds },
-          createdBy: userId
+          _id: { $in: ticketIds }
+          // No createdBy filter - allow access to all tickets including archived
         })
         .populate('agent', 'name team')
         .lean();
@@ -283,8 +283,13 @@ exports.aiAssistant = async (req, res) => {
         startDate = new Date(now.getFullYear(), now.getMonth(), 1);
       }
 
+      // For date queries, search across all tickets (including archived)
+      // Filter by user's tickets OR archived tickets
       const tickets = await Ticket.find({
-        createdBy: userId,
+        $or: [
+          { createdBy: userId },
+          { isArchived: true }
+        ],
         dateEntered: { $gte: startDate }
       })
       .populate('agent', 'name team')
@@ -297,12 +302,15 @@ exports.aiAssistant = async (req, res) => {
         relevanceScore: 100
       }));
     } else {
-      // For semantic queries, use embedding search
+      // For semantic queries, use embedding search across all tickets (including archived)
       const queryEmbedding = await generateEmbedding(message);
 
       if (queryEmbedding) {
         const tickets = await Ticket.find({
-          createdBy: userId,
+          $or: [
+            { createdBy: userId },
+            { isArchived: true }
+          ],
           embedding: { $exists: true, $ne: null }
         })
         .populate('agent', 'name team')
