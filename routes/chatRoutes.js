@@ -33,4 +33,7 @@ router.get('/bookmarks', chatController.getBookmarkedMessages);
 // Search route
 router.get('/search', chatController.searchMessages);
 
+// File upload route
+router.post('/upload', chatController.uploadFile, chatController.uploadChatFile);
+
 module.exports = router;

@@ -2,6 +2,9 @@ const ChatChannel = require('../models/ChatChannel');
 const ChatMessage = require('../models/ChatMessage');
 const User = require('../models/User');
 const mongoose = require('mongoose');
+const cloudinary = require('../config/cloudinary');
+const multer = require('multer');
+const { Readable } = require('stream');
 
 // QA team email whitelist
 const QA_ALLOWED_EMAILS = [
@@ -22,9 +25,9 @@ exports.getChannels = async (req, res) => {
     const userId = req.user._id;
     const userEmail = req.user.email;
 
+    // Get ALL channels where user is a member (including archived)
     let channels = await ChatChannel.find({
-      'members.userId': userId,
-      'settings.archivedBy': { $ne: userId }
+      'members.userId': userId
     })
       .populate('members.userId', 'name email avatar')
       .populate('workspace', 'name')
@@ -36,16 +39,23 @@ exports.getChannels = async (req, res) => {
       channels = channels.filter((channel) => channel.type !== 'qa');
     }
 
-    // Get unread counts for each channel
+    // Get unread counts and add isArchived flag for each channel
     const channelsWithUnread = await Promise.all(
       channels.map(async (channel) => {
         const unreadCount = await ChatMessage.getUnreadCount(
           channel._id,
           userId
         );
+
+        // Check if this specific user has archived this channel
+        const isArchived = channel.settings.archivedBy.some(
+          id => id.toString() === userId.toString()
+        );
+
         return {
           ...channel.toObject(),
-          unreadCount
+          unreadCount,
+          isArchived
         };
       })
     );
@@ -327,23 +337,47 @@ exports.sendMessage = async (req, res) => {
       return res.status(403).json({ message: 'Not a member of this channel' });
     }
 
+    // Process reply metadata
+    let processedMetadata = metadata || {};
+
+    if (metadata && metadata.replyTo) {
+      // If replyTo is just an ID string, fetch the message and populate metadata
+      const replyToMessage = await ChatMessage.findById(metadata.replyTo)
+        .populate('sender', 'name avatar');
+
+      if (replyToMessage) {
+        processedMetadata.replyTo = {
+          messageId: replyToMessage._id,
+          content: replyToMessage.content,
+          sender: replyToMessage.sender._id
+        };
+      }
+    }
+
     // Create message
     const message = await ChatMessage.create({
       channel: channelId,
       sender: userId,
       content,
       type: type || 'text',
-      metadata: metadata || {},
+      metadata: processedMetadata,
       readBy: [{ userId, readAt: new Date() }] // Sender has read it
     });
 
-    // Update channel's last message
+    // Update channel's last message and auto-unarchive if archived
     channel.lastMessage = {
       content: content.substring(0, 100),
       sender: userId,
       timestamp: new Date(),
       type: type || 'text'
     };
+
+    // Auto-unarchive channel for the sender when a message is sent
+    if (channel.settings.archivedBy.some(id => id.toString() === userId.toString())) {
+      channel.settings.archivedBy = channel.settings.archivedBy.filter(
+        id => id.toString() !== userId.toString()
+      );
+    }
 
     await channel.save();
 
@@ -672,3 +706,83 @@ exports.toggleMuteChannel = async (req, res) => {
     res.status(500).json({ message: 'Error muting channel' });
   }
 };
+
+// Configure multer for chat file uploads
+const storage = multer.memoryStorage();
+const uploadFile = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB max file size for chat files
+  }
+}).single('file');
+
+// Upload file to Cloudinary for chat
+exports.uploadChatFile = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No file provided' });
+    }
+
+    const userId = req.user._id;
+    const file = req.file;
+
+    // Determine resource type based on mimetype
+    let resourceType = 'auto';
+    if (file.mimetype.startsWith('image/')) {
+      resourceType = 'image';
+    } else if (file.mimetype.startsWith('video/')) {
+      resourceType = 'video';
+    } else {
+      resourceType = 'raw'; // For PDFs, documents, etc.
+    }
+
+    // Convert buffer to stream
+    const stream = Readable.from(file.buffer);
+
+    // Upload to Cloudinary
+    const uploadPromise = new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: 'clara/chats', // Chat files folder
+          resource_type: resourceType,
+          public_id: `${userId}_${Date.now()}_${file.originalname.split('.')[0]}`,
+        },
+        (error, result) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve(result);
+          }
+        }
+      );
+
+      stream.pipe(uploadStream);
+    });
+
+    const result = await uploadPromise;
+
+    // Return file data
+    res.status(200).json({
+      success: true,
+      file: {
+        url: result.secure_url,
+        publicId: result.public_id,
+        format: result.format,
+        resourceType: result.resource_type,
+        bytes: result.bytes,
+        originalName: file.originalname,
+        mimeType: file.mimetype,
+        createdAt: result.created_at
+      }
+    });
+  } catch (error) {
+    console.error('Error uploading file to Cloudinary:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upload file',
+      error: error.message
+    });
+  }
+};
+
+module.exports.uploadFile = uploadFile;

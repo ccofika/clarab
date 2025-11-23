@@ -167,7 +167,7 @@ app.use('/api/canvas', canvasRoutes);
 app.use('/api/transaction', transactionRoutes);
 app.use('/api/quicklinks', quickLinkRoutes);
 app.use('/api/bookmarks', bookmarkRoutes);
-app.use('/api/user', userRoutes);
+app.use('/api/users', userRoutes); // Changed from /api/user to /api/users for consistency
 app.use('/api/images', imageRoutes);
 app.use('/api/developer', developerRoutes); // Developer-only endpoints
 app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
