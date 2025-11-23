@@ -384,3 +384,114 @@ exports.searchUsers = async (req, res) => {
     res.status(500).json({ message: 'Error searching users' });
   }
 };
+
+// Update user presence status
+exports.updateUserPresence = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { status, customStatus } = req.body;
+
+    // Validate status
+    const validStatuses = ['active', 'away', 'dnd'];
+    if (status && !validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid status. Must be one of: active, away, dnd'
+      });
+    }
+
+    const UserPresence = require('../models/UserPresence');
+
+    // Find or create presence document
+    let presence = await UserPresence.findOne({ userId });
+
+    if (!presence) {
+      presence = new UserPresence({ userId });
+    }
+
+    // Update status if provided
+    if (status) {
+      presence.status = status;
+      presence.isOnline = status === 'active' || status === 'dnd';
+      presence.lastActiveAt = new Date();
+    }
+
+    // Update custom status if provided
+    if (customStatus !== undefined) {
+      if (customStatus === null) {
+        // Clear custom status
+        presence.customStatus = undefined;
+      } else {
+        presence.customStatus = {
+          text: customStatus.text || '',
+          emoji: customStatus.emoji || '',
+          expiresAt: customStatus.expiresAt || null
+        };
+      }
+    }
+
+    await presence.save();
+
+    // Emit Socket.IO event to notify other users
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('user:presence:updated', {
+        userId: userId.toString(),
+        status: presence.status,
+        customStatus: presence.customStatus,
+        isOnline: presence.isOnline,
+        lastActiveAt: presence.lastActiveAt
+      });
+    }
+
+    res.json({
+      success: true,
+      presence: {
+        status: presence.status,
+        customStatus: presence.customStatus,
+        isOnline: presence.isOnline,
+        lastActiveAt: presence.lastActiveAt
+      }
+    });
+  } catch (error) {
+    console.error('Error updating user presence:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to update presence',
+      error: error.message
+    });
+  }
+};
+
+// Get user presence
+exports.getUserPresence = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const UserPresence = require('../models/UserPresence');
+
+    const presence = await UserPresence.findOne({ userId });
+
+    if (!presence) {
+      return res.json({
+        status: 'away',
+        isOnline: false,
+        lastActiveAt: null,
+        customStatus: null
+      });
+    }
+
+    res.json({
+      status: presence.status,
+      customStatus: presence.customStatus,
+      isOnline: presence.isOnline,
+      lastActiveAt: presence.lastActiveAt
+    });
+  } catch (error) {
+    console.error('Error fetching user presence:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch presence',
+      error: error.message
+    });
+  }
+};

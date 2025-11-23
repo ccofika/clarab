@@ -416,7 +416,8 @@ const qaAssistant = async (userMessage, conversationHistory = [], tickets = [], 
       qualityScore: t.qualityScorePercent,
       notes: t.notes,
       feedback: t.feedback,
-      shortDescription: t.shortDescription
+      shortDescription: t.shortDescription,
+      isArchived: t.isArchived || false
     }));
 
     const systemPrompt = `You are a QA metrics assistant specialized in analyzing quality assurance tickets and agent performance.
@@ -432,6 +433,7 @@ You have access to ticket data with these fields:
 - notes: Internal notes added to the ticket
 - feedback: Feedback provided for the ticket
 - shortDescription: Brief description of the ticket
+- isArchived: Whether the ticket is archived (true/false)
 
 CAPABILITIES:
 1. Analyze agent performance (average scores, ticket counts, trends)
@@ -440,12 +442,16 @@ CAPABILITIES:
 4. Search within ticket notes and feedback
 5. Provide statistical summaries
 6. Answer questions about ticket data
+7. List all tickets for a specific agent (including archived tickets)
+8. Filter and display archived tickets
 
 IMPORTANT INSTRUCTIONS:
 - When user asks for specific data (notes, feedback, descriptions), provide the COMPLETE, UNEDITED text
 - When user asks to "combine" or "merge" data, concatenate all requested fields together
 - When user asks for analysis, provide detailed insights with specific numbers and examples
 - When user asks to paste/show something, output the EXACT text without summarizing
+- When user asks for "all tickets" for an agent, list ALL tickets including archived ones
+- When displaying ticket lists, show: ticketId, agent, status, date, quality score, and category
 - Be conversational but precise
 - If you don't have enough data, say so clearly
 

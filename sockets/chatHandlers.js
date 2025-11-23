@@ -3,7 +3,7 @@ const ChatMessage = require('../models/ChatMessage');
 
 // Store for tracking user presence and typing indicators
 const userPresence = new Map(); // userId -> { status, lastSeen, socketId }
-const typingUsers = new Map(); // channelId -> Set of userIds
+const typingUsers = new Map(); // channelId -> Map of userId -> userInfo
 
 module.exports = (io, socket) => {
   const userId = socket.userId;
@@ -107,12 +107,12 @@ module.exports = (io, socket) => {
       }
 
       // Stop typing indicator for this user
-      const typingSet = typingUsers.get(channelId);
-      if (typingSet) {
-        typingSet.delete(userId.toString());
+      const typingMap = typingUsers.get(channelId);
+      if (typingMap) {
+        typingMap.delete(userId.toString());
         io.to(`chat:${channelId}`).emit('chat:typing:update', {
           channelId,
-          typingUsers: Array.from(typingSet)
+          typingUsers: Array.from(typingMap.values())
         });
       }
 
@@ -178,23 +178,33 @@ module.exports = (io, socket) => {
     try {
       const { channelId } = data;
 
-      const channel = await ChatChannel.findById(channelId);
+      const channel = await ChatChannel.findById(channelId).populate('members.userId', 'name email avatar');
 
       if (!channel || !channel.isMember(userId)) {
         return;
       }
 
-      // Add user to typing set
+      // Get user info
+      const userInfo = channel.members.find(m => m.userId._id.toString() === userId.toString())?.userId;
+
+      if (!userInfo) return;
+
+      // Add user to typing map
       if (!typingUsers.has(channelId)) {
-        typingUsers.set(channelId, new Set());
+        typingUsers.set(channelId, new Map());
       }
 
-      typingUsers.get(channelId).add(userId.toString());
+      typingUsers.get(channelId).set(userId.toString(), {
+        _id: userInfo._id,
+        name: userInfo.name,
+        email: userInfo.email,
+        avatar: userInfo.avatar
+      });
 
       // Broadcast to others in channel (not to self)
       socket.to(`chat:${channelId}`).emit('chat:typing:update', {
         channelId,
-        typingUsers: Array.from(typingUsers.get(channelId))
+        typingUsers: Array.from(typingUsers.get(channelId).values())
       });
     } catch (error) {
       console.error('Error handling typing indicator:', error);
@@ -206,18 +216,18 @@ module.exports = (io, socket) => {
     try {
       const { channelId } = data;
 
-      const typingSet = typingUsers.get(channelId);
-      if (typingSet) {
-        typingSet.delete(userId.toString());
+      const typingMap = typingUsers.get(channelId);
+      if (typingMap) {
+        typingMap.delete(userId.toString());
 
         // Broadcast to channel
         io.to(`chat:${channelId}`).emit('chat:typing:update', {
           channelId,
-          typingUsers: Array.from(typingSet)
+          typingUsers: Array.from(typingMap.values())
         });
 
-        // Clean up empty sets
-        if (typingSet.size === 0) {
+        // Clean up empty maps
+        if (typingMap.size === 0) {
           typingUsers.delete(channelId);
         }
       }
@@ -417,6 +427,49 @@ const getTypingUsers = (channelId) => {
   const typingSet = typingUsers.get(channelId);
   return typingSet ? Array.from(typingSet) : [];
 };
+
+// Add inside the main module.exports function, near the end before closing:
+// Handle user presence update from client
+socket.on('user:presence:update', async (data) => {
+  try {
+    const { status, customStatus } = data;
+    const UserPresence = require('../models/UserPresence');
+
+    // Update presence in database
+    let presence = await UserPresence.findOne({ userId });
+
+    if (!presence) {
+      presence = new UserPresence({ userId });
+    }
+
+    if (status) {
+      presence.status = status;
+      presence.isOnline = status === 'active' || status === 'dnd';
+      presence.lastActiveAt = new Date();
+    }
+
+    if (customStatus !== undefined) {
+      if (customStatus === null) {
+        presence.customStatus = undefined;
+      } else {
+        presence.customStatus = customStatus;
+      }
+    }
+
+    await presence.save();
+
+    // Broadcast to all connected clients
+    io.emit('user:presence:updated', {
+      userId: userId.toString(),
+      status: presence.status,
+      customStatus: presence.customStatus,
+      isOnline: presence.isOnline,
+      lastActiveAt: presence.lastActiveAt
+    });
+  } catch (error) {
+    console.error('Error updating presence via socket:', error);
+  }
+});
 
 module.exports.getUserPresence = getUserPresence;
 module.exports.getTypingUsers = getTypingUsers;

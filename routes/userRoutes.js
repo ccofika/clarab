@@ -11,7 +11,9 @@ const {
   getFavoriteWorkspaces,
   trackRecentWorkspace,
   getRecentWorkspaces,
-  searchUsers
+  searchUsers,
+  updateUserPresence,
+  getUserPresence
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
@@ -47,5 +49,9 @@ router.get('/recent/workspaces', protect, getRecentWorkspaces);
 
 // Search users
 router.get('/search', protect, searchUsers);
+
+// User presence routes
+router.put('/presence', protect, updateUserPresence);
+router.get('/presence/:userId', protect, getUserPresence);
 
 module.exports = router;

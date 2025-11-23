@@ -13,6 +13,8 @@ router.put('/channels/:channelId', chatController.updateChannel);
 router.delete('/channels/:channelId', chatController.deleteChannel);
 router.post('/channels/:channelId/archive', chatController.toggleArchiveChannel);
 router.post('/channels/:channelId/mute', chatController.toggleMuteChannel);
+router.get('/muted', chatController.getMutedChannels);
+router.get('/channels/:channelId/mute-status', chatController.getChannelMuteStatus);
 
 // Message routes
 router.get('/channels/:channelId/messages', chatController.getMessages);
@@ -29,6 +31,11 @@ router.delete('/messages/:messageId/reactions', chatController.removeReaction);
 router.post('/messages/:messageId/pin', chatController.togglePinMessage);
 router.post('/messages/:messageId/bookmark', chatController.toggleBookmark);
 router.get('/bookmarks', chatController.getBookmarkedMessages);
+
+// Starred channels routes
+router.post('/channels/:channelId/star', chatController.starChannel);
+router.delete('/channels/:channelId/star', chatController.unstarChannel);
+router.get('/starred', chatController.getStarredChannels);
 
 // Search route
 router.get('/search', chatController.searchMessages);

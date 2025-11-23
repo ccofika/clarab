@@ -1043,6 +1043,82 @@ const deleteChatSession = async (req, res) => {
   }
 };
 
+// @desc    Get all elements by workspace ID
+// @route   GET /api/canvas/workspace/:workspaceId/elements
+// @access  Private
+const getElementsByWorkspace = async (req, res) => {
+  try {
+    const workspace = await Workspace.findById(req.params.workspaceId);
+
+    if (!workspace) {
+      return res.status(404).json({ message: 'Workspace not found' });
+    }
+
+    // Check access using the workspace model's canView method
+    if (!workspace.canView(req.user._id)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Find or create canvas for this workspace
+    let canvas = await Canvas.findOne({ workspace: req.params.workspaceId });
+
+    if (!canvas) {
+      // Return empty array if no canvas exists yet
+      return res.json([]);
+    }
+
+    // Get all elements for this canvas
+    const elements = await CanvasElement.find({ canvas: canvas._id })
+      .sort({ 'position.z': 1 })
+      .populate('createdBy', 'name email')
+      .populate('lastEditedBy', 'name email')
+      .lean();
+
+    // Transform elements to include necessary data for AddContentModal
+    const transformedElements = elements.map(element => ({
+      _id: element._id,
+      type: element.type,
+      content: element.content,
+      position: element.position,
+      style: element.style,
+      createdBy: element.createdBy,
+      lastEditedBy: element.lastEditedBy,
+      createdAt: element.createdAt,
+      updatedAt: element.updatedAt,
+      workspaceId: req.params.workspaceId,
+      workspaceName: workspace.name,
+      // Add convenient fields for display
+      title: (() => {
+        switch (element.type) {
+          case 'title':
+          case 'description':
+            return element.content?.value || 'Untitled';
+          case 'macro':
+            return element.content?.title || 'Untitled Macro';
+          case 'example':
+            const currentExample = element.content?.examples?.[element.content?.currentExampleIndex || 0];
+            return currentExample?.title || 'Untitled Example';
+          default:
+            return `${element.type} element`;
+        }
+      })(),
+      description: element.type === 'description' ? element.content?.value :
+                   element.type === 'macro' ? element.content?.description : '',
+      macro: element.type === 'macro' ? element.content?.description : '',
+      example: element.type === 'example' ? {
+        title: element.content?.examples?.[element.content?.currentExampleIndex || 0]?.title,
+        messages: element.content?.examples?.[element.content?.currentExampleIndex || 0]?.messages || []
+      } : null,
+      thumbnailUrl: element.content?.thumbnailUrl || null
+    }));
+
+    res.json(transformedElements);
+  } catch (error) {
+    console.error('Error fetching workspace elements:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
   getCanvasByWorkspace,
   getCanvasElements,
@@ -1060,5 +1136,6 @@ module.exports = {
   getChatSessions,
   getChatSession,
   addMessageToSession,
-  deleteChatSession
+  deleteChatSession,
+  getElementsByWorkspace
 };

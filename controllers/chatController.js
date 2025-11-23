@@ -386,6 +386,61 @@ exports.sendMessage = async (req, res) => {
       .populate('sender', 'name email avatar')
       .populate('metadata.replyTo.sender', 'name avatar');
 
+    // Create activities for @mentions
+    const { createActivity } = require('./activityController');
+    const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
+    let match;
+
+    while ((match = mentionRegex.exec(content)) !== null) {
+      const mentionedUserId = match[2];
+      const mentionPosition = match.index;
+
+      // Create mention activity
+      await createActivity({
+        userId: mentionedUserId,
+        type: 'mention',
+        messageId: message._id,
+        channelId: channelId,
+        triggeredById: userId,
+        metadata: { mentionPosition }
+      });
+
+      // Emit real-time notification
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user:${mentionedUserId}`).emit('activity:new', {
+          type: 'mention',
+          message: populatedMessage,
+          channel: { _id: channel._id, name: channel.name }
+        });
+      }
+    }
+
+    // Create activity for replies
+    if (processedMetadata.replyTo && processedMetadata.replyTo.sender) {
+      const parentMessage = await ChatMessage.findById(processedMetadata.replyTo.messageId);
+      if (parentMessage && parentMessage.sender.toString() !== userId.toString()) {
+        await createActivity({
+          userId: parentMessage.sender,
+          type: 'reply',
+          messageId: message._id,
+          channelId: channelId,
+          triggeredById: userId,
+          metadata: { parentMessageId: parentMessage._id }
+        });
+
+        // Emit real-time notification
+        const io = req.app.get('io');
+        if (io) {
+          io.to(`user:${parentMessage.sender}`).emit('activity:new', {
+            type: 'reply',
+            message: populatedMessage,
+            channel: { _id: channel._id, name: channel.name }
+          });
+        }
+      }
+    }
+
     res.status(201).json(populatedMessage);
   } catch (error) {
     console.error('Error sending message:', error);
@@ -483,6 +538,29 @@ exports.addReaction = async (req, res) => {
     const updatedMessage = await ChatMessage.findById(messageId)
       .populate('sender', 'name email avatar')
       .populate('reactions.users', 'name avatar');
+
+    // Create activity for reaction (only if user is not reacting to own message)
+    if (message.sender.toString() !== userId.toString()) {
+      const { createActivity } = require('./activityController');
+      await createActivity({
+        userId: message.sender,
+        type: 'reaction',
+        messageId: message._id,
+        channelId: message.channel,
+        triggeredById: userId,
+        metadata: { emoji }
+      });
+
+      // Emit real-time notification
+      const io = req.app.get('io');
+      if (io) {
+        io.to(`user:${message.sender}`).emit('activity:new', {
+          type: 'reaction',
+          message: updatedMessage,
+          emoji
+        });
+      }
+    }
 
     res.json(updatedMessage);
   } catch (error) {
@@ -673,7 +751,7 @@ exports.getBookmarkedMessages = async (req, res) => {
 exports.toggleMuteChannel = async (req, res) => {
   try {
     const { channelId } = req.params;
-    const { duration } = req.body; // Duration in hours, null to unmute
+    const { duration } = req.body; // Duration in hours, null/0 to unmute, -1 for forever
     const userId = req.user._id;
 
     const channel = await ChatChannel.findById(channelId);
@@ -686,24 +764,142 @@ exports.toggleMuteChannel = async (req, res) => {
       return res.status(403).json({ message: 'Not a member of this channel' });
     }
 
-    const member = channel.members.find(
-      (m) => m.userId.toString() === userId.toString()
+    const user = await User.findById(userId);
+
+    // Check if channel is currently muted
+    const mutedIndex = user.mutedChannels.findIndex(
+      mc => mc.channel.toString() === channelId
     );
 
     if (duration === null || duration === 0) {
-      member.mutedUntil = null;
+      // Unmute: remove from mutedChannels
+      if (mutedIndex !== -1) {
+        user.mutedChannels.splice(mutedIndex, 1);
+      }
+      await user.save();
+
+      res.json({
+        success: true,
+        muted: false,
+        mutedUntil: null,
+        message: 'Channel unmuted'
+      });
     } else {
-      const mutedUntil = new Date();
-      mutedUntil.setHours(mutedUntil.getHours() + (duration || 24));
-      member.mutedUntil = mutedUntil;
+      // Mute: add or update mute
+      let mutedUntil = null;
+
+      if (duration !== -1) {
+        // Temporary mute
+        mutedUntil = new Date();
+        mutedUntil.setHours(mutedUntil.getHours() + parseInt(duration));
+      }
+      // If duration === -1, mutedUntil stays null (mute forever)
+
+      if (mutedIndex !== -1) {
+        // Update existing mute
+        user.mutedChannels[mutedIndex].mutedUntil = mutedUntil;
+        user.mutedChannels[mutedIndex].mutedAt = new Date();
+      } else {
+        // Add new mute
+        user.mutedChannels.push({
+          channel: channelId,
+          mutedUntil,
+          mutedAt: new Date()
+        });
+      }
+
+      await user.save();
+
+      res.json({
+        success: true,
+        muted: true,
+        mutedUntil,
+        message: mutedUntil
+          ? `Channel muted for ${duration} hour(s)`
+          : 'Channel muted indefinitely'
+      });
     }
-
-    await channel.save();
-
-    res.json({ muted: member.mutedUntil !== null, mutedUntil: member.mutedUntil });
   } catch (error) {
     console.error('Error muting channel:', error);
     res.status(500).json({ message: 'Error muting channel' });
+  }
+};
+
+// Get user's muted channels
+exports.getMutedChannels = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await User.findById(userId)
+      .select('mutedChannels')
+      .populate({
+        path: 'mutedChannels.channel',
+        select: 'name type members',
+        populate: { path: 'members.userId', select: 'name email avatar' }
+      });
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Filter out expired mutes and remove them
+    const now = new Date();
+    const activeMutes = user.mutedChannels.filter(mc => {
+      if (mc.mutedUntil === null) return true; // Muted forever
+      return mc.mutedUntil > now; // Not yet expired
+    });
+
+    // Clean up expired mutes from database
+    if (activeMutes.length !== user.mutedChannels.length) {
+      user.mutedChannels = activeMutes;
+      await user.save();
+    }
+
+    res.json({
+      success: true,
+      mutedChannels: activeMutes
+    });
+  } catch (error) {
+    console.error('Error fetching muted channels:', error);
+    res.status(500).json({ message: 'Error fetching muted channels' });
+  }
+};
+
+// Check if channel is muted (helper for frontend)
+exports.getChannelMuteStatus = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user._id;
+
+    const user = await User.findById(userId).select('mutedChannels');
+
+    const muteEntry = user.mutedChannels.find(
+      mc => mc.channel.toString() === channelId
+    );
+
+    if (!muteEntry) {
+      return res.json({ muted: false, mutedUntil: null });
+    }
+
+    // Check if mute has expired
+    if (muteEntry.mutedUntil && muteEntry.mutedUntil < new Date()) {
+      // Remove expired mute
+      user.mutedChannels = user.mutedChannels.filter(
+        mc => mc.channel.toString() !== channelId
+      );
+      await user.save();
+
+      return res.json({ muted: false, mutedUntil: null });
+    }
+
+    res.json({
+      muted: true,
+      mutedUntil: muteEntry.mutedUntil,
+      mutedAt: muteEntry.mutedAt
+    });
+  } catch (error) {
+    console.error('Error checking mute status:', error);
+    res.status(500).json({ message: 'Error checking mute status' });
   }
 };
 
@@ -780,6 +976,125 @@ exports.uploadChatFile = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to upload file',
+      error: error.message
+    });
+  }
+};
+
+// Star a channel
+exports.starChannel = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user._id;
+
+    // Verify channel exists and user is a member
+    const channel = await ChatChannel.findOne({
+      _id: channelId,
+      'members.userId': userId
+    });
+
+    if (!channel) {
+      return res.status(404).json({
+        success: false,
+        message: 'Channel not found or you are not a member'
+      });
+    }
+
+    // Add channel to user's starred channels (if not already starred)
+    await User.findByIdAndUpdate(
+      userId,
+      { $addToSet: { starredChannels: channelId } },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Channel starred successfully'
+    });
+  } catch (error) {
+    console.error('Error starring channel:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to star channel',
+      error: error.message
+    });
+  }
+};
+
+// Unstar a channel
+exports.unstarChannel = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user._id;
+
+    // Remove channel from user's starred channels
+    await User.findByIdAndUpdate(
+      userId,
+      { $pull: { starredChannels: channelId } },
+      { new: true }
+    );
+
+    res.json({
+      success: true,
+      message: 'Channel unstarred successfully'
+    });
+  } catch (error) {
+    console.error('Error unstarring channel:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to unstar channel',
+      error: error.message
+    });
+  }
+};
+
+// Get starred channels
+exports.getStarredChannels = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Get user with populated starred channels
+    const user = await User.findById(userId)
+      .select('starredChannels')
+      .populate({
+        path: 'starredChannels',
+        populate: [
+          { path: 'members.userId', select: 'name email avatar' },
+          { path: 'workspace', select: 'name' },
+          { path: 'lastMessage.sender', select: 'name avatar' }
+        ]
+      });
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Filter out deleted channels and add unread counts
+    const starredChannels = await Promise.all(
+      (user.starredChannels || [])
+        .filter(channel => channel != null) // Filter out null references
+        .map(async (channel) => {
+          const unreadCount = await ChatMessage.getUnreadCount(
+            channel._id,
+            userId
+          );
+
+          return {
+            ...channel.toObject(),
+            unreadCount
+          };
+        })
+    );
+
+    res.json(starredChannels);
+  } catch (error) {
+    console.error('Error fetching starred channels:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch starred channels',
       error: error.message
     });
   }

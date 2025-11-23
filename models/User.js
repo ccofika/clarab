@@ -97,6 +97,27 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  // Starred chat channels
+  starredChannels: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ChatChannel'
+  }],
+  // Muted chat channels with expiration
+  mutedChannels: [{
+    channel: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ChatChannel',
+      required: true
+    },
+    mutedUntil: {
+      type: Date,
+      default: null // null = muted forever
+    },
+    mutedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   // Account lockout fields
   loginAttempts: {
     type: Number,

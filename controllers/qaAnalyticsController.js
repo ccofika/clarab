@@ -1,4 +1,5 @@
 const Ticket = require('../models/Ticket');
+const Agent = require('../models/Agent');
 const QASession = require('../models/QASession');
 const logger = require('../utils/logger');
 const { generateEmbedding, cosineSimilarity, qaAssistant } = require('../utils/openai');
@@ -237,6 +238,36 @@ exports.aiAssistant = async (req, res) => {
     // Determine if query is date-related
     const isDateQuery = /this week|today|yesterday|last week|this month|last month/i.test(message);
 
+    // Determine if query is looking for archived tickets
+    const isArchivedQuery = /archived|archive/i.test(message);
+
+    // Determine if user wants ALL tickets (not just top results)
+    const wantsAllTickets = /all tickets|list all|show all|give me all|every ticket/i.test(message);
+
+    // Try to extract agent name from query
+    let agentFilter = null;
+    let agentMatch = null;
+
+    // Remove "from archived" temporarily to avoid matching it as agent name
+    const cleanedMessage = message.replace(/from\s+archived/gi, '');
+
+    // Match patterns: "for <name>", "agent: <name>", "of <name>", or just a name after common prepositions
+    agentMatch = cleanedMessage.match(/for\s+([a-z]+(?:\s+[a-z]+)+)/i) ||
+                 cleanedMessage.match(/agent[:\s]+([a-z]+(?:\s+[a-z]+)+)/i) ||
+                 cleanedMessage.match(/of\s+([a-z]+(?:\s+[a-z]+)+)/i) ||
+                 cleanedMessage.match(/by\s+([a-z]+(?:\s+[a-z]+)+)/i);
+
+    if (agentMatch) {
+      const agentName = agentMatch[1].trim();
+      // Find agent by name (case insensitive)
+      const agent = await Agent.findOne({
+        name: { $regex: new RegExp(`^${agentName}$`, 'i') }
+      });
+      if (agent) {
+        agentFilter = agent._id;
+      }
+    }
+
     let searchResults = [];
 
     // If user is referencing previous results, load them from session
@@ -283,19 +314,65 @@ exports.aiAssistant = async (req, res) => {
         startDate = new Date(now.getFullYear(), now.getMonth(), 1);
       }
 
-      // For date queries, search across all tickets (including archived)
-      // Filter by user's tickets OR archived tickets
-      const tickets = await Ticket.find({
+      // Build filter for date queries
+      const dateFilter = {
         $or: [
           { createdBy: userId },
           { isArchived: true }
         ],
         dateEntered: { $gte: startDate }
-      })
-      .populate('agent', 'name team')
-      .sort({ dateEntered: -1 })
-      .limit(10)
-      .lean();
+      };
+
+      // Add agent filter if specified
+      if (agentFilter) {
+        dateFilter.agent = agentFilter;
+      }
+
+      // For date queries, search across all tickets (including archived)
+      let query = Ticket.find(dateFilter)
+        .populate('agent', 'name team')
+        .sort({ dateEntered: -1 });
+
+      // Only limit if user doesn't want all tickets or if no agent filter
+      if (!wantsAllTickets && !agentFilter) {
+        query = query.limit(10);
+      }
+
+      const tickets = await query.lean();
+
+      searchResults = tickets.map(ticket => ({
+        ...ticket,
+        relevanceScore: 100
+      }));
+    } else if (agentFilter || isArchivedQuery) {
+      // Direct query for archived tickets or specific agent without date/semantic search
+      const directFilter = {
+        $or: [
+          { createdBy: userId },
+          { isArchived: true }
+        ]
+      };
+
+      // Add agent filter if specified
+      if (agentFilter) {
+        directFilter.agent = agentFilter;
+      }
+
+      // If specifically looking for archived tickets, add that filter
+      if (isArchivedQuery) {
+        directFilter.isArchived = true;
+      }
+
+      let query = Ticket.find(directFilter)
+        .populate('agent', 'name team')
+        .sort({ dateEntered: -1 });
+
+      // Only limit if user doesn't want all tickets
+      if (!wantsAllTickets && !agentFilter) {
+        query = query.limit(10);
+      }
+
+      const tickets = await query.lean();
 
       searchResults = tickets.map(ticket => ({
         ...ticket,
@@ -306,13 +383,26 @@ exports.aiAssistant = async (req, res) => {
       const queryEmbedding = await generateEmbedding(message);
 
       if (queryEmbedding) {
-        const tickets = await Ticket.find({
+        // Build filter for semantic search
+        const semanticFilter = {
           $or: [
             { createdBy: userId },
             { isArchived: true }
           ],
           embedding: { $exists: true, $ne: null }
-        })
+        };
+
+        // Add agent filter if specified
+        if (agentFilter) {
+          semanticFilter.agent = agentFilter;
+        }
+
+        // If specifically looking for archived tickets, add that filter
+        if (isArchivedQuery) {
+          semanticFilter.isArchived = true;
+        }
+
+        const tickets = await Ticket.find(semanticFilter)
         .populate('agent', 'name team')
         .lean();
 
@@ -324,10 +414,16 @@ exports.aiAssistant = async (req, res) => {
           };
         });
 
-        searchResults = results
-          .filter(r => r.relevanceScore > 40)
-          .sort((a, b) => b.relevanceScore - a.relevanceScore)
-          .slice(0, 5);
+        // If agent filter is specified or user wants all tickets, don't filter by relevance score
+        if (agentFilter || wantsAllTickets) {
+          searchResults = results
+            .sort((a, b) => b.relevanceScore - a.relevanceScore);
+        } else {
+          searchResults = results
+            .filter(r => r.relevanceScore > 40)
+            .sort((a, b) => b.relevanceScore - a.relevanceScore)
+            .slice(0, 5);
+        }
       }
     }
 

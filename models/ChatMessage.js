@@ -71,6 +71,26 @@ const chatMessageSchema = new mongoose.Schema(
         preview: {
           type: String
         },
+        description: {
+          type: String
+        },
+        macro: {
+          type: String
+        },
+        example: {
+          title: String,
+          messages: [{
+            type: {
+              type: String,
+              enum: ['user', 'agent']
+            },
+            text: String
+          }]
+        },
+        exampleIndex: {
+          type: Number,
+          default: null
+        },
         thumbnailUrl: {
           type: String
         }

@@ -17,7 +17,8 @@ const {
   getChatSessions,
   getChatSession,
   addMessageToSession,
-  deleteChatSession
+  deleteChatSession,
+  getElementsByWorkspace
 } = require('../controllers/canvasController');
 const { protect } = require('../middleware/auth');
 
@@ -42,6 +43,7 @@ router.post('/elements/:elementId/generate-embedding', protect, generateElementE
 
 // Canvas routes
 router.get('/workspace/:workspaceId', protect, getCanvasByWorkspace);
+router.get('/workspace/:workspaceId/elements', protect, getElementsByWorkspace);
 router.put('/:canvasId/viewstate', protect, updateCanvasViewState);
 
 // Canvas element routes
