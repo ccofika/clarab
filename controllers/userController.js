@@ -352,3 +352,35 @@ exports.getRecentWorkspaces = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+// Search users by name or email
+exports.searchUsers = async (req, res) => {
+  try {
+    const { query } = req.query;
+    const currentUserId = req.user._id;
+
+    if (!query || query.trim().length === 0) {
+      // Return all users if no query (limit to 20)
+      const users = await User.find({ _id: { $ne: currentUserId } })
+        .select('name email avatar')
+        .limit(20);
+      return res.json(users);
+    }
+
+    // Search by name or email (case insensitive)
+    const users = await User.find({
+      _id: { $ne: currentUserId }, // Exclude current user
+      $or: [
+        { name: { $regex: query, $options: 'i' } },
+        { email: { $regex: query, $options: 'i' } }
+      ]
+    })
+      .select('name email avatar')
+      .limit(20);
+
+    res.json(users);
+  } catch (error) {
+    console.error('Error searching users:', error);
+    res.status(500).json({ message: 'Error searching users' });
+  }
+};

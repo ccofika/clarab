@@ -10,7 +10,8 @@ const {
   toggleFavoriteWorkspace,
   getFavoriteWorkspaces,
   trackRecentWorkspace,
-  getRecentWorkspaces
+  getRecentWorkspaces,
+  searchUsers
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
@@ -43,5 +44,8 @@ router.post('/recent/workspace/:workspaceId', protect, trackRecentWorkspace);
 
 // Get recent workspaces
 router.get('/recent/workspaces', protect, getRecentWorkspaces);
+
+// Search users
+router.get('/search', protect, searchUsers);
 
 module.exports = router;
