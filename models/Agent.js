@@ -5,7 +5,8 @@ const agentSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Agent name is required'],
     trim: true,
-    maxlength: [200, 'Name cannot exceed 200 characters']
+    maxlength: [200, 'Name cannot exceed 200 characters'],
+    unique: true // Agent names are globally unique
   },
   position: {
     type: String,
@@ -27,6 +28,16 @@ const agentSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+  // Array of user IDs who currently have this agent in their active grading list
+  activeForUsers: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  }],
+  // Whether this agent is removed from all grading lists (soft delete)
+  isRemoved: {
+    type: Boolean,
+    default: false
   }
 }, {
   timestamps: true
@@ -36,8 +47,7 @@ const agentSchema = new mongoose.Schema({
 agentSchema.index({ name: 1 });
 agentSchema.index({ team: 1 });
 agentSchema.index({ createdBy: 1 });
-// Compound index to ensure unique agent names per user
-agentSchema.index({ name: 1, createdBy: 1 }, { unique: true });
+agentSchema.index({ activeForUsers: 1 });
 
 // Virtual for ticket count (populated when needed)
 agentSchema.virtual('ticketCount', {

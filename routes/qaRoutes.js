@@ -9,6 +9,10 @@ const {
   createAgent,
   updateAgent,
   deleteAgent,
+  getAllExistingAgents,
+  addExistingAgent,
+  getAgentsWithTickets,
+  checkSimilarAgents,
   // Ticket controllers
   getAllTickets,
   getTicket,
@@ -26,7 +30,12 @@ const {
   // AI Search controllers
   aiSemanticSearch,
   generateTicketEmbeddingEndpoint,
-  generateAllTicketEmbeddings
+  generateAllTicketEmbeddings,
+  // All Agents Admin controllers
+  getAllAgentsAdmin,
+  updateAgentAdmin,
+  mergeAgents,
+  deleteAgentAdmin
 } = require('../controllers/qaController');
 
 const {
@@ -63,6 +72,22 @@ const qaAuthorization = (req, res, next) => {
   next();
 };
 
+// Admin authorization - only Filip and Nevena for All Agents management
+const allAgentsAdminAuth = (req, res, next) => {
+  const adminEmails = [
+    'filipkozomara@mebit.io',
+    'nevena@mebit.io'
+  ];
+
+  if (!adminEmails.includes(req.user.email)) {
+    return res.status(403).json({
+      message: 'Access denied. Only admins can manage all agents.'
+    });
+  }
+
+  next();
+};
+
 // Apply authentication and authorization to all routes
 router.use(protect);
 router.use(qaAuthorization);
@@ -74,6 +99,12 @@ router.use(qaAuthorization);
 router.route('/agents')
   .get(getAllAgents)
   .post(validate('createAgent'), createAgent);
+
+// Special agent routes (must be before :id routes)
+router.get('/agents/all/existing', getAllExistingAgents);
+router.get('/agents/with-tickets', getAgentsWithTickets);
+router.post('/agents/check-similar', checkSimilarAgents);
+router.post('/agents/:id/add-to-list', addExistingAgent);
 
 router.route('/agents/:id')
   .get(getAgent)
@@ -141,5 +172,14 @@ router.route('/ai-sessions')
 router.route('/ai-sessions/:id')
   .get(getAISession)
   .delete(deleteAISession);
+
+// ============================================
+// ALL AGENTS ADMIN ROUTES (Admin only - Filip & Nevena)
+// ============================================
+
+router.get('/all-agents', allAgentsAdminAuth, getAllAgentsAdmin);
+router.put('/all-agents/:id', allAgentsAdminAuth, updateAgentAdmin);
+router.delete('/all-agents/:id', allAgentsAdminAuth, deleteAgentAdmin);
+router.post('/all-agents/merge', allAgentsAdminAuth, mergeAgents);
 
 module.exports = router;

@@ -72,15 +72,20 @@ activitySchema.statics.getUnreadCount = async function(userId) {
 };
 
 activitySchema.statics.getUnreadByType = async function(userId) {
-  const result = await this.aggregate([
-    { $match: { userId: mongoose.Types.ObjectId(userId), isRead: false } },
-    { $group: { _id: '$type', count: { $sum: 1 } } }
-  ]);
+  try {
+    const result = await this.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(userId), isRead: false } },
+      { $group: { _id: '$type', count: { $sum: 1 } } }
+    ]);
 
-  return result.reduce((acc, item) => {
-    acc[item._id] = item.count;
-    return acc;
-  }, {});
+    return result.reduce((acc, item) => {
+      acc[item._id] = item.count;
+      return acc;
+    }, {});
+  } catch (error) {
+    console.error('Error in getUnreadByType:', error);
+    return {};
+  }
 };
 
 activitySchema.statics.markAllAsRead = async function(userId, filters = {}) {

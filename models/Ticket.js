@@ -10,7 +10,7 @@ const ticketSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Ticket ID is required'],
     trim: true,
-    unique: true,
+    // Note: unique constraint is now compound (ticketId + agent) - see index below
     maxlength: [100, 'Ticket ID cannot exceed 100 characters']
   },
   shortDescription: {
@@ -98,7 +98,8 @@ ticketSchema.index({ agent: 1 });
 ticketSchema.index({ status: 1 });
 ticketSchema.index({ dateEntered: -1 });
 ticketSchema.index({ isArchived: 1 });
-// ticketId already has unique index from schema definition
+// Compound unique index: same ticketId can exist for different agents, but not for the same agent
+ticketSchema.index({ ticketId: 1, agent: 1 }, { unique: true });
 ticketSchema.index({ createdBy: 1 });
 ticketSchema.index({ agent: 1, status: 1 });
 ticketSchema.index({ agent: 1, isArchived: 1 });

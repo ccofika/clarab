@@ -143,18 +143,30 @@ const createCanvasElement = async (req, res) => {
 
     // Generate AI embedding in background (don't await to avoid blocking response)
     // Fetch all canvas elements for context
+    const elementId = element._id;
     CanvasElement.find({ canvas: req.params.canvasId })
       .then(allElements => {
         return generateElementEmbedding(element, allElements);
       })
-      .then(embedding => {
+      .then(async (embedding) => {
         if (embedding) {
-          element.embedding = embedding;
-          element.embeddingOutdated = false;
-          return element.save();
+          // Re-fetch element to check if it still exists and avoid version conflicts
+          const existingElement = await CanvasElement.findById(elementId);
+          if (existingElement) {
+            // Use findByIdAndUpdate to avoid version conflicts
+            await CanvasElement.findByIdAndUpdate(elementId, {
+              embedding: embedding,
+              embeddingOutdated: false
+            });
+          }
         }
       })
-      .catch(err => console.error('Error generating embedding:', err));
+      .catch(err => {
+        // Only log if it's not a version error from a deleted document
+        if (err.name !== 'VersionError') {
+          console.error('Error generating embedding:', err);
+        }
+      });
 
     // Update canvas metadata
     canvas.metadata.lastEditedBy = req.user._id;
@@ -224,18 +236,31 @@ const updateCanvasElement = async (req, res) => {
 
     // Generate new AI embedding in background (content changed)
     // Fetch all canvas elements for context
-    CanvasElement.find({ canvas: element.canvas._id })
+    const elementId = updatedElement._id;
+    const canvasId = element.canvas._id;
+    CanvasElement.find({ canvas: canvasId })
       .then(allElements => {
         return generateElementEmbedding(updatedElement, allElements);
       })
-      .then(embedding => {
+      .then(async (embedding) => {
         if (embedding) {
-          updatedElement.embedding = embedding;
-          updatedElement.embeddingOutdated = false;
-          return updatedElement.save();
+          // Re-fetch element to check if it still exists and avoid version conflicts
+          const existingElement = await CanvasElement.findById(elementId);
+          if (existingElement) {
+            // Use findByIdAndUpdate to avoid version conflicts
+            await CanvasElement.findByIdAndUpdate(elementId, {
+              embedding: embedding,
+              embeddingOutdated: false
+            });
+          }
         }
       })
-      .catch(err => console.error('Error generating embedding:', err));
+      .catch(err => {
+        // Only log if it's not a version error from a deleted document
+        if (err.name !== 'VersionError') {
+          console.error('Error generating embedding:', err);
+        }
+      });
 
     // Update canvas metadata
     await Canvas.findByIdAndUpdate(element.canvas._id, {
@@ -573,9 +598,11 @@ const generateElementEmbeddingEndpoint = async (req, res) => {
     const embedding = await generateElementEmbedding(element);
 
     if (embedding) {
-      element.embedding = embedding;
-      element.embeddingOutdated = false;
-      await element.save();
+      // Use findByIdAndUpdate to avoid version conflicts
+      await CanvasElement.findByIdAndUpdate(element._id, {
+        embedding: embedding,
+        embeddingOutdated: false
+      });
       return res.json({ message: 'Embedding generated successfully', hasEmbedding: true });
     } else {
       return res.json({ message: 'No content to embed', hasEmbedding: false });
@@ -646,14 +673,23 @@ const generateAllEmbeddings = async (req, res) => {
           try {
             const embedding = await generateElementEmbedding(element);
             if (embedding) {
-              element.embedding = embedding;
-              element.embeddingOutdated = false;
-              await element.save();
-              processed++;
+              // Re-fetch element to check if it still exists
+              const existingElement = await CanvasElement.findById(element._id);
+              if (existingElement) {
+                // Use findByIdAndUpdate to avoid version conflicts
+                await CanvasElement.findByIdAndUpdate(element._id, {
+                  embedding: embedding,
+                  embeddingOutdated: false
+                });
+                processed++;
+              }
             }
           } catch (error) {
-            console.error(`Error processing element ${element._id}:`, error);
-            errors++;
+            // Don't count version errors as errors (element was deleted)
+            if (error.name !== 'VersionError') {
+              console.error(`Error processing element ${element._id}:`, error);
+              errors++;
+            }
           }
         })
       );

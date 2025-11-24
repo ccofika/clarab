@@ -15,8 +15,11 @@ module.exports = (io, socket) => {
         'members.userId': userId
       });
 
+      console.log(`🚪 User ${userId} joining ${channels.length} channels`);
+
       channels.forEach((channel) => {
         socket.join(`chat:${channel._id}`);
+        console.log(`  ✅ Joined channel: ${channel._id}`);
       });
 
       // Set user as online
@@ -36,8 +39,11 @@ module.exports = (io, socket) => {
       });
 
       socket.emit('chat:init:success', {
-        message: 'Connected to chat system'
+        message: 'Connected to chat system',
+        channelCount: channels.length
       });
+
+      console.log(`✅ Chat initialized for user ${userId} - joined ${channels.length} channels`);
     } catch (error) {
       console.error('Error initializing chat:', error);
       socket.emit('chat:error', { message: 'Failed to initialize chat' });
@@ -94,13 +100,17 @@ module.exports = (io, socket) => {
     try {
       const { channelId, message } = data;
 
+      console.log(`📨 Message send event from user ${userId} to channel ${channelId}`);
+
       const channel = await ChatChannel.findById(channelId);
 
       if (!channel) {
+        console.error(`❌ Channel ${channelId} not found`);
         return socket.emit('chat:error', { message: 'Channel not found' });
       }
 
       if (!channel.isMember(userId)) {
+        console.error(`❌ User ${userId} not a member of channel ${channelId}`);
         return socket.emit('chat:error', {
           message: 'Not a member of this channel'
         });
@@ -116,12 +126,21 @@ module.exports = (io, socket) => {
         });
       }
 
+      // Get sockets in this room
+      const socketsInRoom = await io.in(`chat:${channelId}`).fetchSockets();
+      console.log(`📢 Broadcasting to channel ${channelId}, ${socketsInRoom.length} sockets in room:`);
+      socketsInRoom.forEach(s => {
+        console.log(`   - Socket ${s.id} (user: ${s.userId})`);
+      });
+
       // Broadcast message to channel (including sender for instant feedback)
       io.to(`chat:${channelId}`).emit('chat:message:received', {
         channelId,
         message,
         timestamp: new Date()
       });
+
+      console.log(`✅ Message broadcasted to channel ${channelId}`);
 
       // Update last message in channel for all members
       io.to(`chat:${channelId}`).emit('chat:channel:updated', {
@@ -375,6 +394,48 @@ module.exports = (io, socket) => {
     }
   });
 
+  // Handle user presence update from client
+  socket.on('user:presence:update', async (data) => {
+    try {
+      const { status, customStatus } = data;
+      const UserPresence = require('../models/UserPresence');
+
+      // Update presence in database
+      let presence = await UserPresence.findOne({ userId });
+
+      if (!presence) {
+        presence = new UserPresence({ userId });
+      }
+
+      if (status) {
+        presence.status = status;
+        presence.isOnline = status === 'active' || status === 'dnd';
+        presence.lastActiveAt = new Date();
+      }
+
+      if (customStatus !== undefined) {
+        if (customStatus === null) {
+          presence.customStatus = undefined;
+        } else {
+          presence.customStatus = customStatus;
+        }
+      }
+
+      await presence.save();
+
+      // Broadcast to all connected clients
+      io.emit('user:presence:updated', {
+        userId: userId.toString(),
+        status: presence.status,
+        customStatus: presence.customStatus,
+        isOnline: presence.isOnline,
+        lastActiveAt: presence.lastActiveAt
+      });
+    } catch (error) {
+      console.error('Error updating presence:', error);
+    }
+  });
+
   // Handle disconnect
   socket.on('disconnect', async () => {
     try {
@@ -427,49 +488,6 @@ const getTypingUsers = (channelId) => {
   const typingSet = typingUsers.get(channelId);
   return typingSet ? Array.from(typingSet) : [];
 };
-
-// Add inside the main module.exports function, near the end before closing:
-// Handle user presence update from client
-socket.on('user:presence:update', async (data) => {
-  try {
-    const { status, customStatus } = data;
-    const UserPresence = require('../models/UserPresence');
-
-    // Update presence in database
-    let presence = await UserPresence.findOne({ userId });
-
-    if (!presence) {
-      presence = new UserPresence({ userId });
-    }
-
-    if (status) {
-      presence.status = status;
-      presence.isOnline = status === 'active' || status === 'dnd';
-      presence.lastActiveAt = new Date();
-    }
-
-    if (customStatus !== undefined) {
-      if (customStatus === null) {
-        presence.customStatus = undefined;
-      } else {
-        presence.customStatus = customStatus;
-      }
-    }
-
-    await presence.save();
-
-    // Broadcast to all connected clients
-    io.emit('user:presence:updated', {
-      userId: userId.toString(),
-      status: presence.status,
-      customStatus: presence.customStatus,
-      isOnline: presence.isOnline,
-      lastActiveAt: presence.lastActiveAt
-    });
-  } catch (error) {
-    console.error('Error updating presence via socket:', error);
-  }
-});
 
 module.exports.getUserPresence = getUserPresence;
 module.exports.getTypingUsers = getTypingUsers;

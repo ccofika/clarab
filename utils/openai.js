@@ -5,7 +5,7 @@ const openai = new OpenAI({
 });
 
 const AI_MODEL = 'gpt-5-nano-2025-08-07'; // AI model for chat completions
-const EMBEDDING_MODEL = 'text-embedding-ada-002';
+const EMBEDDING_MODEL = 'text-embedding-3-small'; // Upgraded from ada-002: 5x cheaper, better performance
 
 /**
  * Extract searchable text from canvas element

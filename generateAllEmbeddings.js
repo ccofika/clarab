@@ -61,17 +61,30 @@ const runMigration = async (force = false) => {
             const embedding = await generateElementEmbedding(element, allCanvasElements);
 
             if (embedding) {
-              element.embedding = embedding;
-              element.embeddingOutdated = false;
-              await element.save();
-              console.log('✅');
-              processed++;
+              // Re-fetch element to check if it still exists
+              const existingElement = await CanvasElement.findById(element._id);
+              if (existingElement) {
+                // Use findByIdAndUpdate to avoid version conflicts
+                await CanvasElement.findByIdAndUpdate(element._id, {
+                  embedding: embedding,
+                  embeddingOutdated: false
+                });
+                console.log('✅');
+                processed++;
+              } else {
+                console.log('⏭️  (deleted)');
+              }
             } else {
               console.log('⏭️  (no content)');
             }
           } catch (error) {
-            console.log(`❌ Error: ${error.message}`);
-            errors++;
+            // Don't count version errors as errors (element was deleted)
+            if (error.name === 'VersionError') {
+              console.log('⏭️  (deleted)');
+            } else {
+              console.log(`❌ Error: ${error.message}`);
+              errors++;
+            }
           }
         })
       );

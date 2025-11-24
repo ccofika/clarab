@@ -106,18 +106,33 @@ const migrateTickets = async () => {
             const embedding = await generateTicketEmbedding(ticket);
 
             if (embedding) {
-              ticket.embedding = embedding;
-              ticket.embeddingOutdated = false;
-              await ticket.save();
-              processed++;
-              console.log(`  ✓ Generated embedding for ticket: ${ticket.ticketId || ticket._id}`);
+              // Re-fetch ticket to check if it still exists
+              const existingTicket = await Ticket.findById(ticket._id);
+              if (existingTicket) {
+                // Use findByIdAndUpdate to avoid version conflicts
+                await Ticket.findByIdAndUpdate(ticket._id, {
+                  embedding: embedding,
+                  embeddingOutdated: false
+                });
+                processed++;
+                console.log(`  ✓ Generated embedding for ticket: ${ticket.ticketId || ticket._id}`);
+              } else {
+                skipped++;
+                console.log(`  ⊘ Skipped ticket (deleted): ${ticket.ticketId || ticket._id}`);
+              }
             } else {
               skipped++;
               console.log(`  ⊘ Skipped ticket (no content): ${ticket.ticketId || ticket._id}`);
             }
           } catch (error) {
-            errors++;
-            console.error(`  ✗ Error processing ticket ${ticket.ticketId || ticket._id}:`, error.message);
+            // Don't count version errors as errors (ticket was deleted)
+            if (error.name !== 'VersionError') {
+              errors++;
+              console.error(`  ✗ Error processing ticket ${ticket.ticketId || ticket._id}:`, error.message);
+            } else {
+              skipped++;
+              console.log(`  ⊘ Skipped ticket (deleted): ${ticket.ticketId || ticket._id}`);
+            }
           }
         })
       );

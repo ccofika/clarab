@@ -11,14 +11,17 @@ const {
 // AGENT CONTROLLERS
 // ============================================
 
-// @desc    Get all agents
+// @desc    Get all agents active for current user
 // @route   GET /api/qa/agents
 // @access  Private
 exports.getAllAgents = async (req, res) => {
   try {
     const userId = req.user._id;
-    // Filter agents by current user
-    const agents = await Agent.find({ createdBy: userId }).sort({ name: 1 });
+    // Filter agents where current user is in activeForUsers array
+    const agents = await Agent.find({
+      activeForUsers: userId,
+      isRemoved: false
+    }).sort({ name: 1 });
 
     // Get ticket counts for each agent (only for current user's tickets)
     const agentsWithStats = await Promise.all(
@@ -91,20 +94,39 @@ exports.getAgent = async (req, res) => {
   }
 };
 
-// @desc    Create agent
+// @desc    Create new agent (globally unique)
 // @route   POST /api/qa/agents
 // @access  Private
 exports.createAgent = async (req, res) => {
   try {
+    const userId = req.user._id;
+
+    // Check if agent with this name already exists
+    const existingAgent = await Agent.findOne({
+      name: req.body.name.trim()
+    });
+
+    if (existingAgent) {
+      // Agent exists, add current user to activeForUsers if not already there
+      if (!existingAgent.activeForUsers.includes(userId)) {
+        existingAgent.activeForUsers.push(userId);
+        await existingAgent.save();
+        logger.info(`Existing agent added to user's list: ${existingAgent.name} for user ${req.user.email}`);
+      }
+      return res.status(201).json(existingAgent);
+    }
+
+    // Create new agent with current user in activeForUsers
     const agent = await Agent.create({
       ...req.body,
-      createdBy: req.user._id
+      createdBy: userId,
+      activeForUsers: [userId]
     });
-    logger.info(`Agent created: ${agent.name} by user ${req.user.email}`);
+    logger.info(`New agent created: ${agent.name} by user ${req.user.email}`);
     res.status(201).json(agent);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'You already have an agent with this name' });
+      return res.status(400).json({ message: 'An agent with this name already exists' });
     }
     logger.error('Error creating agent:', error);
     res.status(500).json({ message: 'Server error' });
@@ -138,34 +160,140 @@ exports.updateAgent = async (req, res) => {
   }
 };
 
-// @desc    Delete agent
+// @desc    Remove agent from current user's grading list
 // @route   DELETE /api/qa/agents/:id
 // @access  Private
 exports.deleteAgent = async (req, res) => {
   try {
-    // Find agent only if it belongs to current user
-    const agent = await Agent.findOne({ _id: req.params.id, createdBy: req.user._id });
+    const userId = req.user._id;
+    const agent = await Agent.findById(req.params.id);
 
     if (!agent) {
       return res.status(404).json({ message: 'Agent not found' });
     }
 
-    // Check if agent has tickets (only check current user's tickets)
-    const ticketCount = await Ticket.countDocuments({
-      agent: agent._id,
-      createdBy: req.user._id
+    // Remove current user from activeForUsers array
+    agent.activeForUsers = agent.activeForUsers.filter(
+      id => !id.equals(userId)
+    );
+
+    await agent.save();
+    logger.info(`Agent removed from grading list: ${agent.name} by user ${req.user.email}`);
+    res.json({ message: 'Agent removed from your grading list successfully' });
+  } catch (error) {
+    logger.error('Error removing agent from grading list:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get all existing agents in the system
+// @route   GET /api/qa/agents/all/existing
+// @access  Private
+exports.getAllExistingAgents = async (req, res) => {
+  try {
+    // Get all agents, excluding removed ones
+    const agents = await Agent.find({ isRemoved: false })
+      .select('name position team createdBy activeForUsers')
+      .sort({ name: 1 });
+
+    res.json(agents);
+  } catch (error) {
+    logger.error('Error fetching all existing agents:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Add existing agent to user's grading list
+// @route   POST /api/qa/agents/:id/add-to-list
+// @access  Private
+exports.addExistingAgent = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const agent = await Agent.findById(req.params.id);
+
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Add user to activeForUsers if not already there
+    if (!agent.activeForUsers.includes(userId)) {
+      agent.activeForUsers.push(userId);
+      await agent.save();
+      logger.info(`Existing agent added to user's list: ${agent.name} for user ${req.user.email}`);
+    }
+
+    res.json(agent);
+  } catch (error) {
+    logger.error('Error adding existing agent:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get all agents who have tickets (for filters)
+// @route   GET /api/qa/agents/with-tickets
+// @access  Private
+exports.getAgentsWithTickets = async (req, res) => {
+  try {
+    // Get all agent IDs that have at least one ticket
+    const agentsWithTickets = await Ticket.distinct('agent');
+
+    // Get agent details for those IDs
+    const agents = await Agent.find({
+      _id: { $in: agentsWithTickets }
+    })
+      .select('name position team')
+      .sort({ name: 1 });
+
+    res.json(agents);
+  } catch (error) {
+    logger.error('Error fetching agents with tickets:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Check for similar agent names (fuzzy search)
+// @route   POST /api/qa/agents/check-similar
+// @access  Private
+exports.checkSimilarAgents = async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name || name.trim().length === 0) {
+      return res.json({ exists: false, similar: [] });
+    }
+
+    const searchName = name.trim().toLowerCase();
+
+    // Check for exact match (case insensitive)
+    const exactMatch = await Agent.findOne({
+      name: { $regex: new RegExp(`^${searchName}$`, 'i') },
+      isRemoved: false
     });
-    if (ticketCount > 0) {
-      return res.status(400).json({
-        message: `Cannot delete agent with ${ticketCount} associated ticket(s). Please delete or reassign tickets first.`
+
+    if (exactMatch) {
+      return res.json({
+        exists: true,
+        exactMatch: true,
+        agent: exactMatch
       });
     }
 
-    await Agent.findByIdAndDelete(req.params.id);
-    logger.info(`Agent deleted: ${agent.name} by user ${req.user.email}`);
-    res.json({ message: 'Agent deleted successfully' });
+    // Find similar names using regex (contains parts of the name)
+    const similarAgents = await Agent.find({
+      $or: [
+        { name: { $regex: searchName, $options: 'i' } },
+        { name: { $regex: searchName.split(' ')[0], $options: 'i' } }
+      ],
+      isRemoved: false
+    }).limit(5);
+
+    res.json({
+      exists: false,
+      exactMatch: false,
+      similar: similarAgents
+    });
   } catch (error) {
-    logger.error('Error deleting agent:', error);
+    logger.error('Error checking similar agents:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -337,21 +465,33 @@ exports.createTicket = async (req, res) => {
       .populate('createdBy', 'name email');
 
     // Generate AI embedding in background (don't await to avoid blocking response)
+    const ticketId = ticket._id;
     generateTicketEmbedding(populatedTicket)
-      .then(embedding => {
+      .then(async (embedding) => {
         if (embedding) {
-          ticket.embedding = embedding;
-          ticket.embeddingOutdated = false;
-          return ticket.save();
+          // Re-fetch ticket to check if it still exists and avoid version conflicts
+          const existingTicket = await Ticket.findById(ticketId);
+          if (existingTicket) {
+            // Use findByIdAndUpdate to avoid version conflicts
+            await Ticket.findByIdAndUpdate(ticketId, {
+              embedding: embedding,
+              embeddingOutdated: false
+            });
+          }
         }
       })
-      .catch(err => console.error('Error generating ticket embedding:', err));
+      .catch(err => {
+        // Only log if it's not a version error from a deleted document
+        if (err.name !== 'VersionError') {
+          console.error('Error generating ticket embedding:', err);
+        }
+      });
 
     logger.info(`Ticket created: ${ticket.ticketId} by user ${req.user.email}`);
     res.status(201).json(populatedTicket);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'Ticket with this ID already exists' });
+      return res.status(400).json({ message: 'Ticket with this ID already exists for this agent' });
     }
     logger.error('Error creating ticket:', error);
     res.status(500).json({ message: 'Server error' });
@@ -399,7 +539,7 @@ exports.updateTicket = async (req, res) => {
     res.json(ticket);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'Ticket with this ID already exists' });
+      return res.status(400).json({ message: 'Ticket with this ID already exists for this agent' });
     }
     logger.error('Error updating ticket:', error);
     res.status(500).json({ message: 'Server error' });
@@ -662,9 +802,11 @@ exports.exportMaestro = async (req, res) => {
     }
 
     // Get tickets for the agent in the specified week (only current user's tickets)
+    // Only export tickets with status 'Selected' (exclude 'Graded' tickets)
     const filter = {
       agent: agentId,
       isArchived: false,
+      status: 'Selected',
       createdBy: userId
     };
 
@@ -725,32 +867,29 @@ exports.exportMaestro = async (req, res) => {
 // ============================================
 
 // Helper function to generate ticket embedding
+// Prioritizes Notes and Feedback for semantic search (primary content for finding similar tickets)
 const generateTicketEmbedding = async (ticket) => {
   try {
-    // Combine all searchable text from the ticket
-    const textParts = [];
+    // Primary content - Notes and Feedback are the main searchable content
+    const primaryContent = [];
+    if (ticket.notes) primaryContent.push(ticket.notes);
+    if (ticket.feedback) primaryContent.push(ticket.feedback);
 
-    if (ticket.ticketId) textParts.push(`Ticket ID: ${ticket.ticketId}`);
-    if (ticket.shortDescription) textParts.push(`Description: ${ticket.shortDescription}`);
-    if (ticket.notes) textParts.push(`Notes: ${ticket.notes}`);
-    if (ticket.feedback) textParts.push(`Feedback: ${ticket.feedback}`);
-    if (ticket.category) textParts.push(`Category: ${ticket.category}`);
-    if (ticket.priority) textParts.push(`Priority: ${ticket.priority}`);
-    if (ticket.tags && ticket.tags.length > 0) textParts.push(`Tags: ${ticket.tags.join(', ')}`);
-    if (ticket.status) textParts.push(`Status: ${ticket.status}`);
+    // Secondary content - provides context but lower weight
+    const secondaryContent = [];
+    if (ticket.shortDescription) secondaryContent.push(ticket.shortDescription);
+    if (ticket.tags && ticket.tags.length > 0) secondaryContent.push(`Tags: ${ticket.tags.join(', ')}`);
 
-    // Get agent info if populated
-    if (ticket.agent) {
-      if (typeof ticket.agent === 'object' && ticket.agent.name) {
-        textParts.push(`Agent: ${ticket.agent.name}`);
-        if (ticket.agent.team) textParts.push(`Team: ${ticket.agent.team}`);
-      }
+    // If no primary content, fall back to secondary
+    if (primaryContent.length === 0 && secondaryContent.length === 0) {
+      return null;
     }
 
-    const combinedText = textParts.join(' | ');
-
-    if (!combinedText.trim()) {
-      return null;
+    // Combine with primary content first (more weight in the embedding)
+    // Format: "Primary content... | Context: secondary content"
+    let combinedText = primaryContent.join(' ');
+    if (secondaryContent.length > 0) {
+      combinedText += ' | Context: ' + secondaryContent.join(' ');
     }
 
     const embedding = await generateEmbedding(combinedText);
@@ -761,7 +900,55 @@ const generateTicketEmbedding = async (ticket) => {
   }
 };
 
-// @desc    AI-powered semantic search for tickets
+// Helper: Preprocess query for better semantic matching
+const preprocessQuery = (query) => {
+  // Normalize whitespace and trim
+  let processed = query.trim().replace(/\s+/g, ' ');
+
+  // Common abbreviations expansion for QA domain
+  const expansions = {
+    'wd': 'wrong deposit',
+    'wn': 'wrong network',
+    'kyc': 'know your customer verification',
+    'aml': 'anti money laundering',
+    '2fa': 'two factor authentication',
+    'tx': 'transaction',
+    'txn': 'transaction',
+    'addr': 'address',
+    'acct': 'account',
+    'pwd': 'password',
+    'auth': 'authentication'
+  };
+
+  // Expand abbreviations (case insensitive)
+  Object.entries(expansions).forEach(([abbr, full]) => {
+    const regex = new RegExp(`\\b${abbr}\\b`, 'gi');
+    processed = processed.replace(regex, full);
+  });
+
+  return processed;
+};
+
+// Helper: Calculate keyword match score for hybrid search
+const calculateKeywordScore = (query, ticket) => {
+  const queryWords = query.toLowerCase().split(/\s+/).filter(w => w.length > 2);
+  if (queryWords.length === 0) return 0;
+
+  const ticketText = [
+    ticket.notes || '',
+    ticket.feedback || '',
+    ticket.shortDescription || ''
+  ].join(' ').toLowerCase();
+
+  let matches = 0;
+  queryWords.forEach(word => {
+    if (ticketText.includes(word)) matches++;
+  });
+
+  return (matches / queryWords.length) * 100;
+};
+
+// @desc    AI-powered semantic search for tickets (Enhanced with Hybrid Search)
 // @route   GET /api/qa/ai-search
 // @access  Private
 exports.aiSemanticSearch = async (req, res) => {
@@ -784,8 +971,11 @@ exports.aiSemanticSearch = async (req, res) => {
       return res.json([]);
     }
 
-    // Generate embedding for search query
-    const queryEmbedding = await generateEmbedding(query);
+    // Step 1: Preprocess the query
+    const processedQuery = preprocessQuery(query);
+
+    // Step 2: Generate embedding for processed query
+    const queryEmbedding = await generateEmbedding(processedQuery);
 
     if (!queryEmbedding) {
       return res.status(400).json({ message: 'Could not generate query embedding' });
@@ -828,26 +1018,47 @@ exports.aiSemanticSearch = async (req, res) => {
       if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
     }
 
-    // Fetch tickets with embeddings
+    // Step 3: Fetch tickets with embeddings
     const tickets = await Ticket.find(filter)
       .select('+embedding')
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email')
       .lean();
 
-    // Calculate similarity scores
+    // Step 4: Hybrid Search - Combine semantic similarity with keyword matching
     const results = tickets.map(ticket => {
-      const similarity = cosineSimilarity(queryEmbedding, ticket.embedding);
+      // Semantic score (cosine similarity)
+      const semanticScore = cosineSimilarity(queryEmbedding, ticket.embedding) * 100;
+
+      // Keyword score (exact word matches)
+      const keywordScore = calculateKeywordScore(query, ticket);
+
+      // Hybrid score: 70% semantic + 30% keyword (semantic is primary, keyword boosts exact matches)
+      const hybridScore = (semanticScore * 0.7) + (keywordScore * 0.3);
+
       return {
         ...ticket,
-        relevanceScore: Math.round(similarity * 100),
+        relevanceScore: Math.round(hybridScore),
+        semanticScore: Math.round(semanticScore),
+        keywordScore: Math.round(keywordScore),
         embedding: undefined // Remove embedding from response
       };
     });
 
-    // Sort by relevance and filter by minimum threshold
+    // Step 5: Sort by hybrid relevance score
     results.sort((a, b) => b.relevanceScore - a.relevanceScore);
-    const filteredResults = results.filter(r => r.relevanceScore > 40).slice(0, parseInt(limit));
+
+    // Step 6: Dynamic threshold based on best match
+    // If best result is >70%, use 35% threshold; otherwise use 25% to show more results
+    const bestScore = results.length > 0 ? results[0].relevanceScore : 0;
+    const threshold = bestScore > 70 ? 35 : 25;
+
+    const filteredResults = results
+      .filter(r => r.relevanceScore > threshold)
+      .slice(0, parseInt(limit));
+
+    // Log search stats for debugging
+    logger.info(`AI Search: query="${query}", processed="${processedQuery}", results=${filteredResults.length}, bestScore=${bestScore}, threshold=${threshold}`);
 
     res.json(filteredResults);
   } catch (error) {
@@ -872,9 +1083,11 @@ exports.generateTicketEmbeddingEndpoint = async (req, res) => {
     const embedding = await generateTicketEmbedding(ticket);
 
     if (embedding) {
-      ticket.embedding = embedding;
-      ticket.embeddingOutdated = false;
-      await ticket.save();
+      // Use findByIdAndUpdate to avoid version conflicts
+      await Ticket.findByIdAndUpdate(ticket._id, {
+        embedding: embedding,
+        embeddingOutdated: false
+      });
       logger.info(`Embedding generated for ticket ${ticket.ticketId} by user ${req.user.email}`);
       return res.json({ message: 'Embedding generated successfully', hasEmbedding: true });
     } else {
@@ -891,11 +1104,17 @@ exports.generateTicketEmbeddingEndpoint = async (req, res) => {
 // @access  Private
 exports.generateAllTicketEmbeddings = async (req, res) => {
   try {
-    const { force } = req.body;
-    const userId = req.user._id;
+    const { force, includeArchived = true } = req.body;
 
-    // Build query for tickets without embeddings or outdated
-    const query = { createdBy: userId };
+    // Build query - include all tickets (archived and active) for complete semantic search
+    // Only filter by Notes/Feedback content existence for better embeddings
+    const query = {};
+
+    // When includeArchived is true, process all tickets for semantic search across archive
+    // When false, only process active tickets
+    if (!includeArchived) {
+      query.isArchived = false;
+    }
 
     if (!force) {
       query.$or = [
@@ -905,10 +1124,20 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
       ];
     }
 
+    // Only generate embeddings for tickets that have notes or feedback (primary search content)
+    query.$and = query.$and || [];
+    query.$and.push({
+      $or: [
+        { notes: { $exists: true, $ne: null, $ne: '' } },
+        { feedback: { $exists: true, $ne: null, $ne: '' } }
+      ]
+    });
+
     const tickets = await Ticket.find(query).populate('agent', 'name team position');
 
     let processed = 0;
     let errors = 0;
+    let skipped = 0;
 
     // Process in batches to avoid rate limits
     const batchSize = 20;
@@ -920,14 +1149,25 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
           try {
             const embedding = await generateTicketEmbedding(ticket);
             if (embedding) {
-              ticket.embedding = embedding;
-              ticket.embeddingOutdated = false;
-              await ticket.save();
-              processed++;
+              // Re-fetch ticket to check if it still exists
+              const existingTicket = await Ticket.findById(ticket._id);
+              if (existingTicket) {
+                // Use findByIdAndUpdate to avoid version conflicts
+                await Ticket.findByIdAndUpdate(ticket._id, {
+                  embedding: embedding,
+                  embeddingOutdated: false
+                });
+                processed++;
+              }
+            } else {
+              skipped++;
             }
           } catch (error) {
-            console.error(`Error processing ticket ${ticket._id}:`, error);
-            errors++;
+            // Don't count version errors as errors (ticket was deleted)
+            if (error.name !== 'VersionError') {
+              console.error(`Error processing ticket ${ticket._id}:`, error);
+              errors++;
+            }
           }
         })
       );
@@ -938,16 +1178,287 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
       }
     }
 
-    logger.info(`Batch embedding generation: ${processed} processed, ${errors} errors by user ${req.user.email}`);
+    logger.info(`Batch embedding generation: ${processed} processed, ${skipped} skipped, ${errors} errors by user ${req.user.email}`);
 
     res.json({
       message: 'Embedding generation complete',
       total: tickets.length,
       processed,
+      skipped,
       errors
     });
   } catch (error) {
     logger.error('Error generating embeddings:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// ALL AGENTS MANAGEMENT (Admin Only)
+// ============================================
+
+// @desc    Get all agents in system with pagination (Admin only)
+// @route   GET /api/qa/all-agents
+// @access  Private (Admin)
+exports.getAllAgentsAdmin = async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 50,
+      search = '',
+      sortBy = 'name',
+      sortOrder = 'asc'
+    } = req.query;
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Build filter
+    const filter = { isRemoved: false };
+
+    if (search) {
+      filter.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { team: { $regex: search, $options: 'i' } },
+        { position: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    // Build sort
+    const sort = {};
+    sort[sortBy] = sortOrder === 'desc' ? -1 : 1;
+
+    // Get total count
+    const total = await Agent.countDocuments(filter);
+
+    // Get paginated agents
+    const agents = await Agent.find(filter)
+      .sort(sort)
+      .skip(skip)
+      .limit(limitNum)
+      .lean();
+
+    // Get ticket counts for each agent
+    const agentsWithStats = await Promise.all(
+      agents.map(async (agent) => {
+        const ticketCount = await Ticket.countDocuments({ agent: agent._id });
+        return {
+          ...agent,
+          ticketCount
+        };
+      })
+    );
+
+    res.json({
+      agents: agentsWithStats,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    logger.error('Error getting all agents:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Update agent (Admin only)
+// @route   PUT /api/qa/all-agents/:id
+// @access  Private (Admin)
+exports.updateAgentAdmin = async (req, res) => {
+  try {
+    const { name, position, team } = req.body;
+
+    const agent = await Agent.findById(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Check if new name already exists (for a different agent)
+    if (name && name !== agent.name) {
+      const existingAgent = await Agent.findOne({ name, _id: { $ne: agent._id } });
+      if (existingAgent) {
+        return res.status(400).json({ message: 'An agent with this name already exists' });
+      }
+    }
+
+    // Update fields
+    if (name) agent.name = name;
+    if (position !== undefined) agent.position = position;
+    if (team !== undefined) agent.team = team;
+
+    await agent.save();
+
+    // Get ticket count for response
+    const ticketCount = await Ticket.countDocuments({ agent: agent._id });
+
+    logger.info(`Agent updated by admin: ${agent.name} by ${req.user.email}`);
+
+    res.json({
+      ...agent.toObject(),
+      ticketCount
+    });
+  } catch (error) {
+    logger.error('Error updating agent:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Merge two agents into one (Admin only)
+// @route   POST /api/qa/all-agents/merge
+// @access  Private (Admin)
+exports.mergeAgents = async (req, res) => {
+  try {
+    const { sourceAgentId, targetAgentId, finalName, finalPosition, finalTeam } = req.body;
+
+    // Validate input
+    if (!sourceAgentId || !targetAgentId) {
+      return res.status(400).json({ message: 'Both source and target agent IDs are required' });
+    }
+
+    if (sourceAgentId === targetAgentId) {
+      return res.status(400).json({ message: 'Cannot merge agent with itself' });
+    }
+
+    // Get both agents
+    const sourceAgent = await Agent.findById(sourceAgentId);
+    const targetAgent = await Agent.findById(targetAgentId);
+
+    if (!sourceAgent || !targetAgent) {
+      return res.status(404).json({ message: 'One or both agents not found' });
+    }
+
+    // Check if final name already exists (for a different agent than target or source)
+    // Source will be soft-deleted, so we can use its name too
+    if (finalName && finalName !== targetAgent.name && finalName !== sourceAgent.name) {
+      const existingAgent = await Agent.findOne({
+        name: finalName,
+        _id: { $nin: [targetAgentId, sourceAgentId] },
+        isRemoved: false
+      });
+      if (existingAgent) {
+        return res.status(400).json({ message: 'An agent with this name already exists' });
+      }
+    }
+
+    // Count tickets before merge
+    const sourceTicketCount = await Ticket.countDocuments({ agent: sourceAgentId });
+    const targetTicketCount = await Ticket.countDocuments({ agent: targetAgentId });
+
+    // Find duplicate ticketIds that exist in both agents
+    // We need to handle these to avoid unique constraint violation on (ticketId, agent)
+    const sourceTickets = await Ticket.find({ agent: sourceAgentId }).select('ticketId').lean();
+    const targetTickets = await Ticket.find({ agent: targetAgentId }).select('ticketId').lean();
+
+    const targetTicketIds = new Set(targetTickets.map(t => t.ticketId));
+    const duplicateTicketIds = sourceTickets
+      .filter(t => targetTicketIds.has(t.ticketId))
+      .map(t => t.ticketId);
+
+    // Delete duplicate tickets from source agent (target already has them)
+    let duplicatesDeleted = 0;
+    if (duplicateTicketIds.length > 0) {
+      const deleteResult = await Ticket.deleteMany({
+        agent: sourceAgentId,
+        ticketId: { $in: duplicateTicketIds }
+      });
+      duplicatesDeleted = deleteResult.deletedCount;
+      logger.info(`Merge: Deleted ${duplicatesDeleted} duplicate tickets from source agent`);
+    }
+
+    // Move tickets from source to target agent BEFORE changing names
+    // This must happen while source agent still exists
+    const updateResult = await Ticket.updateMany(
+      { agent: sourceAgentId },
+      { $set: { agent: targetAgentId } }
+    );
+
+    // Store source agent name for logging before we modify it
+    const sourceAgentOriginalName = sourceAgent.name;
+
+    // IMPORTANT: If finalName equals source agent's name, we need to:
+    // 1. First rename/remove source agent to free up the name
+    // 2. Then update target agent with the final name
+    // This avoids unique constraint violation on agent name
+    if (finalName && finalName === sourceAgent.name) {
+      // Rename source agent temporarily to free up the name
+      sourceAgent.name = `__merged_${sourceAgent._id}_${Date.now()}`;
+      sourceAgent.isRemoved = true;
+      await sourceAgent.save();
+    } else {
+      // Mark source agent as removed (soft delete)
+      sourceAgent.isRemoved = true;
+      await sourceAgent.save();
+    }
+
+    // Now update target agent with final values (name is now free if it was source's name)
+    targetAgent.name = finalName || targetAgent.name;
+    targetAgent.position = finalPosition !== undefined ? finalPosition : targetAgent.position;
+    targetAgent.team = finalTeam !== undefined ? finalTeam : targetAgent.team;
+
+    // Merge activeForUsers arrays (combine unique users)
+    const combinedUsers = [...new Set([
+      ...targetAgent.activeForUsers.map(id => id.toString()),
+      ...sourceAgent.activeForUsers.map(id => id.toString())
+    ])];
+    targetAgent.activeForUsers = combinedUsers;
+
+    await targetAgent.save();
+
+    // Get final ticket count
+    const finalTicketCount = await Ticket.countDocuments({ agent: targetAgentId });
+
+    logger.info(`Agents merged by admin: "${sourceAgentOriginalName}" -> "${targetAgent.name}" (${updateResult.modifiedCount} tickets moved, ${duplicatesDeleted} duplicates removed) by ${req.user.email}`);
+
+    res.json({
+      message: 'Agents merged successfully',
+      mergedAgent: {
+        ...targetAgent.toObject(),
+        ticketCount: finalTicketCount
+      },
+      stats: {
+        sourceTickets: sourceTicketCount,
+        targetTickets: targetTicketCount,
+        duplicatesDeleted: duplicatesDeleted,
+        ticketsMoved: updateResult.modifiedCount,
+        totalTickets: finalTicketCount
+      }
+    });
+  } catch (error) {
+    logger.error('Error merging agents:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Delete agent permanently (Admin only) - only if no tickets
+// @route   DELETE /api/qa/all-agents/:id
+// @access  Private (Admin)
+exports.deleteAgentAdmin = async (req, res) => {
+  try {
+    const agent = await Agent.findById(req.params.id);
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Check if agent has any tickets
+    const ticketCount = await Ticket.countDocuments({ agent: agent._id });
+    if (ticketCount > 0) {
+      return res.status(400).json({
+        message: `Cannot delete agent with ${ticketCount} tickets. Use merge instead.`
+      });
+    }
+
+    // Permanently delete agent
+    await Agent.findByIdAndDelete(req.params.id);
+
+    logger.info(`Agent deleted by admin: ${agent.name} by ${req.user.email}`);
+
+    res.json({ message: 'Agent deleted successfully' });
+  } catch (error) {
+    logger.error('Error deleting agent:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

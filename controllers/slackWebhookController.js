@@ -194,36 +194,37 @@ const handleThreadReply = async (event, req) => {
 
     console.log('✅ KYC message marked as answered (waiting for customer support to relay)');
 
-    // Only emit socket event for FIRST reply
-    if (isFirstReply) {
-      // Get Socket.io instance
-      const io = req.app.get('io');
-      if (!io) {
-        console.error('❌ Socket.io not available');
-        return;
-      }
-
-      const eventData = {
-        threadTs: event.thread_ts,
-        reply: {
-          ts: event.ts,
-          user: event.user,
-          text: event.text,
-          timestamp: new Date()
-        },
-        messageId: kycMessage._id
-      };
-
-      console.log('📡 Emitting thread-reply event:', eventData);
-
-      // Emit thread-reply event to all connected clients
-      io.emit('thread-reply', eventData);
-
-      console.log('✅ First thread reply event emitted via Socket.io to all clients');
-      console.log(`🔌 Connected clients: ${io.engine.clientsCount}`);
-    } else {
-      console.log('ℹ️  Subsequent reply - not emitting socket event (card won\'t update)');
+    // Get Socket.io instance
+    const io = req.app.get('io');
+    if (!io) {
+      console.error('❌ Socket.io not available');
+      return;
     }
+
+    const eventData = {
+      threadTs: event.thread_ts,
+      reply: {
+        ts: event.ts,
+        user: event.user,
+        text: event.text,
+        timestamp: new Date()
+      },
+      messageId: kycMessage._id,
+      isFirstReply
+    };
+
+    console.log('📡 Emitting thread-reply event:', {
+      ...eventData,
+      isFirstReply,
+      kycMessageId: kycMessage._id
+    });
+
+    // Emit thread-reply event to all connected clients
+    // (Frontend will decide whether to update based on current state)
+    io.emit('thread-reply', eventData);
+
+    console.log(`✅ Thread reply event emitted via Socket.io to all clients (isFirstReply: ${isFirstReply})`);
+    console.log(`🔌 Connected clients: ${io.engine.clientsCount}`);
 
   } catch (error) {
     console.error('❌ Error handling thread reply:', error);
