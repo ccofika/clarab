@@ -848,17 +848,8 @@ exports.exportMaestro = async (req, res) => {
       .select('ticketId')
       .sort({ dateEntered: -1 });
 
-    // Create Excel workbook
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('Maestro Unos');
-
-    // Set column width (no header)
-    worksheet.getColumn(1).width = 20;
-
-    // Add ticket IDs directly (no header row)
-    tickets.forEach(ticket => {
-      worksheet.addRow([ticket.ticketId]);
-    });
+    // Create CSV content - just ticket IDs, one per line
+    const csvContent = tickets.map(ticket => ticket.ticketId).join('\n');
 
     // Format dates for filename
     const formatDate = (dateString) => {
@@ -873,16 +864,15 @@ exports.exportMaestro = async (req, res) => {
     const dateToFormatted = weekEnd ? formatDate(weekEnd) : '';
     const agentNameClean = agent.name.replace(/\s+/g, '_');
 
-    const fileName = `${agentNameClean}_${dateFromFormatted}_${dateToFormatted}.xlsx`;
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    const fileName = `${agentNameClean}_${dateFromFormatted}_${dateToFormatted}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
 
-    // Write to response
-    await workbook.xlsx.write(res);
+    // Send CSV content
+    res.send(csvContent);
 
     logger.info(`Maestro export generated: ${fileName} for agent ${agent.name} (${tickets.length} tickets) by user ${req.user.email}`);
-    res.end();
   } catch (error) {
     logger.error('Error exporting Maestro:', error);
     res.status(500).json({ message: 'Server error' });
