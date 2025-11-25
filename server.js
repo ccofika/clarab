@@ -70,8 +70,9 @@ const corsOptions = {
 
 app.use(cors(corsOptions));
 
-// Slack webhook endpoint needs raw body for signature verification
+// Slack webhook endpoints need raw body for signature verification
 app.use('/api/slack/events', express.raw({ type: 'application/json' }));
+app.use('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }));
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
@@ -162,6 +163,7 @@ const qaRoutes = require('./routes/qaRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
+const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -178,6 +180,11 @@ app.use('/api/qa', qaRoutes); // QA Manager endpoints
 app.use('/api/chat', chatRoutes); // Chat endpoints
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
+app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
+
+// KYC Stats Slack Events webhook (needs special handling)
+const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
+app.post('/api/kyc-stats/slack-events', handleKYCStatsSlackEvents);
 
 // Root route
 app.get('/', (req, res) => {
