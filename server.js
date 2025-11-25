@@ -72,7 +72,10 @@ app.use(cors(corsOptions));
 
 // Slack webhook endpoints need raw body for signature verification
 app.use('/api/slack/events', express.raw({ type: 'application/json' }));
-app.use('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }));
+
+// KYC Stats Slack Events - MUST be before body parsing middleware
+const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
+app.post('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }), handleKYCStatsSlackEvents);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
@@ -181,10 +184,6 @@ app.use('/api/chat', chatRoutes); // Chat endpoints
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
 app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
-
-// KYC Stats Slack Events webhook (needs special handling)
-const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
-app.post('/api/kyc-stats/slack-events', handleKYCStatsSlackEvents);
 
 // Root route
 app.get('/', (req, res) => {
