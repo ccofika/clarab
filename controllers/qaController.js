@@ -449,10 +449,14 @@ exports.getTicket = async (req, res) => {
 // @access  Private
 exports.createTicket = async (req, res) => {
   try {
-    // Check if agent exists and belongs to current user
-    const agent = await Agent.findOne({ _id: req.body.agent, createdBy: req.user._id });
+    // Check if agent exists and is in user's active grading list
+    const agent = await Agent.findOne({
+      _id: req.body.agent,
+      activeForUsers: req.user._id,
+      isRemoved: false
+    });
     if (!agent) {
-      return res.status(400).json({ message: 'Invalid agent ID or agent does not belong to you' });
+      return res.status(400).json({ message: 'Invalid agent ID or agent is not in your grading list' });
     }
 
     const ticket = await Ticket.create({
@@ -503,11 +507,15 @@ exports.createTicket = async (req, res) => {
 // @access  Private
 exports.updateTicket = async (req, res) => {
   try {
-    // If agent is being updated, check if it exists and belongs to current user
+    // If agent is being updated, check if it exists and is in user's active grading list
     if (req.body.agent) {
-      const agent = await Agent.findOne({ _id: req.body.agent, createdBy: req.user._id });
+      const agent = await Agent.findOne({
+        _id: req.body.agent,
+        activeForUsers: req.user._id,
+        isRemoved: false
+      });
       if (!agent) {
-        return res.status(400).json({ message: 'Invalid agent ID or agent does not belong to you' });
+        return res.status(400).json({ message: 'Invalid agent ID or agent is not in your grading list' });
       }
     }
 
