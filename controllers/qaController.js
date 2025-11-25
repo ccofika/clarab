@@ -1026,38 +1026,71 @@ exports.aiSemanticSearch = async (req, res) => {
       if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
     }
 
-    // Step 3: Fetch tickets with embeddings
+    // MEMORY OPTIMIZATION: Limit tickets loaded and process in batches
+    // Max 500 tickets to prevent OOM on low-memory servers
+    const MAX_TICKETS_FOR_SEARCH = 500;
+
+    // First, get count to check if we need to limit
+    const totalCount = await Ticket.countDocuments(filter);
+
+    // If too many tickets, add date filter to get most recent
+    if (totalCount > MAX_TICKETS_FOR_SEARCH) {
+      // Sort by date and limit
+      logger.info(`AI Search: Limiting from ${totalCount} to ${MAX_TICKETS_FOR_SEARCH} tickets for memory safety`);
+    }
+
+    // Step 3: Fetch tickets with embeddings (limited for memory safety)
     const tickets = await Ticket.find(filter)
-      .select('+embedding')
+      .select('+embedding ticketId shortDescription notes feedback status dateEntered qualityScorePercent category priority tags agent createdBy isArchived')
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email')
+      .sort({ dateEntered: -1 })
+      .limit(MAX_TICKETS_FOR_SEARCH)
       .lean();
 
-    // Step 4: Hybrid Search - Combine semantic similarity with keyword matching
-    const results = tickets.map(ticket => {
+    // Step 4: Hybrid Search - Process in memory-efficient way
+    const results = [];
+    for (const ticket of tickets) {
+      if (!ticket.embedding) continue;
+
       // Semantic score (cosine similarity)
       const semanticScore = cosineSimilarity(queryEmbedding, ticket.embedding) * 100;
 
       // Keyword score (exact word matches)
       const keywordScore = calculateKeywordScore(query, ticket);
 
-      // Hybrid score: 70% semantic + 30% keyword (semantic is primary, keyword boosts exact matches)
+      // Hybrid score: 70% semantic + 30% keyword
       const hybridScore = (semanticScore * 0.7) + (keywordScore * 0.3);
 
-      return {
-        ...ticket,
-        relevanceScore: Math.round(hybridScore),
-        semanticScore: Math.round(semanticScore),
-        keywordScore: Math.round(keywordScore),
-        embedding: undefined // Remove embedding from response
-      };
-    });
+      // Only keep results above minimum threshold to save memory
+      if (hybridScore > 20) {
+        results.push({
+          _id: ticket._id,
+          ticketId: ticket.ticketId,
+          shortDescription: ticket.shortDescription,
+          notes: ticket.notes,
+          feedback: ticket.feedback,
+          status: ticket.status,
+          dateEntered: ticket.dateEntered,
+          qualityScorePercent: ticket.qualityScorePercent,
+          category: ticket.category,
+          priority: ticket.priority,
+          tags: ticket.tags,
+          agent: ticket.agent,
+          createdBy: ticket.createdBy,
+          isArchived: ticket.isArchived,
+          relevanceScore: Math.round(hybridScore),
+          semanticScore: Math.round(semanticScore),
+          keywordScore: Math.round(keywordScore)
+          // embedding explicitly NOT included
+        });
+      }
+    }
 
     // Step 5: Sort by hybrid relevance score
     results.sort((a, b) => b.relevanceScore - a.relevanceScore);
 
     // Step 6: Dynamic threshold based on best match
-    // If best result is >70%, use 35% threshold; otherwise use 25% to show more results
     const bestScore = results.length > 0 ? results[0].relevanceScore : 0;
     const threshold = bestScore > 70 ? 35 : 25;
 
@@ -1066,7 +1099,7 @@ exports.aiSemanticSearch = async (req, res) => {
       .slice(0, parseInt(limit));
 
     // Log search stats for debugging
-    logger.info(`AI Search: query="${query}", processed="${processedQuery}", results=${filteredResults.length}, bestScore=${bestScore}, threshold=${threshold}`);
+    logger.info(`AI Search: query="${query}", processed="${processedQuery}", ticketsSearched=${tickets.length}, results=${filteredResults.length}, bestScore=${bestScore}, threshold=${threshold}`);
 
     res.json(filteredResults);
   } catch (error) {
@@ -1141,56 +1174,93 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
       ]
     });
 
-    const tickets = await Ticket.find(query).populate('agent', 'name team position');
+    // MEMORY OPTIMIZATION: Get count first and process using cursor
+    const totalCount = await Ticket.countDocuments(query);
+
+    // Limit to prevent server crash - process max 200 at a time
+    const MAX_BATCH_TOTAL = 200;
+    if (totalCount > MAX_BATCH_TOTAL) {
+      logger.warn(`Embedding generation limited: ${totalCount} tickets found, processing only ${MAX_BATCH_TOTAL}`);
+    }
 
     let processed = 0;
     let errors = 0;
     let skipped = 0;
 
-    // Process in batches to avoid rate limits
-    const batchSize = 20;
-    for (let i = 0; i < tickets.length; i += batchSize) {
-      const batch = tickets.slice(i, i + batchSize);
+    // Process in small batches using cursor to avoid loading all into memory
+    const batchSize = 10; // Smaller batch for memory safety
+    let batch = [];
 
-      await Promise.all(
-        batch.map(async (ticket) => {
-          try {
-            const embedding = await generateTicketEmbedding(ticket);
-            if (embedding) {
-              // Re-fetch ticket to check if it still exists
-              const existingTicket = await Ticket.findById(ticket._id);
-              if (existingTicket) {
-                // Use findByIdAndUpdate to avoid version conflicts
-                await Ticket.findByIdAndUpdate(ticket._id, {
+    const cursor = Ticket.find(query)
+      .select('_id ticketId notes feedback shortDescription tags')
+      .populate('agent', 'name team position')
+      .limit(MAX_BATCH_TOTAL)
+      .cursor();
+
+    for await (const ticket of cursor) {
+      batch.push(ticket);
+
+      if (batch.length >= batchSize) {
+        // Process batch
+        await Promise.all(
+          batch.map(async (t) => {
+            try {
+              const embedding = await generateTicketEmbedding(t);
+              if (embedding) {
+                await Ticket.findByIdAndUpdate(t._id, {
                   embedding: embedding,
                   embeddingOutdated: false
                 });
                 processed++;
+              } else {
+                skipped++;
               }
+            } catch (error) {
+              if (error.name !== 'VersionError') {
+                console.error(`Error processing ticket ${t._id}:`, error);
+                errors++;
+              }
+            }
+          })
+        );
+
+        // Clear batch and wait to respect rate limits
+        batch = [];
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    }
+
+    // Process remaining tickets in batch
+    if (batch.length > 0) {
+      await Promise.all(
+        batch.map(async (t) => {
+          try {
+            const embedding = await generateTicketEmbedding(t);
+            if (embedding) {
+              await Ticket.findByIdAndUpdate(t._id, {
+                embedding: embedding,
+                embeddingOutdated: false
+              });
+              processed++;
             } else {
               skipped++;
             }
           } catch (error) {
-            // Don't count version errors as errors (ticket was deleted)
             if (error.name !== 'VersionError') {
-              console.error(`Error processing ticket ${ticket._id}:`, error);
+              console.error(`Error processing ticket ${t._id}:`, error);
               errors++;
             }
           }
         })
       );
-
-      // Small delay between batches to respect rate limits
-      if (i + batchSize < tickets.length) {
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      }
     }
 
     logger.info(`Batch embedding generation: ${processed} processed, ${skipped} skipped, ${errors} errors by user ${req.user.email}`);
 
     res.json({
       message: 'Embedding generation complete',
-      total: tickets.length,
+      total: Math.min(totalCount, MAX_BATCH_TOTAL),
+      totalInDb: totalCount,
       processed,
       skipped,
       errors
