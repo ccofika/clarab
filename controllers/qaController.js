@@ -543,6 +543,25 @@ exports.updateTicket = async (req, res) => {
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');
 
+    // Regenerate embedding in background whenever ticket is updated
+    // This ensures AI search always has up-to-date embeddings
+    const ticketId = ticket._id;
+    generateTicketEmbedding(ticket)
+      .then(async (embedding) => {
+        if (embedding) {
+          await Ticket.findByIdAndUpdate(ticketId, {
+            embedding: embedding,
+            embeddingOutdated: false
+          });
+          logger.info(`Embedding regenerated for updated ticket ${ticket.ticketId}`);
+        }
+      })
+      .catch(err => {
+        if (err.name !== 'VersionError') {
+          logger.error(`Error regenerating embedding for ticket ${ticket.ticketId}:`, err);
+        }
+      });
+
     logger.info(`Ticket updated: ${ticket.ticketId} by user ${req.user.email}`);
     res.json(ticket);
   } catch (error) {
@@ -956,7 +975,7 @@ const calculateKeywordScore = (query, ticket) => {
   return (matches / queryWords.length) * 100;
 };
 
-// @desc    AI-powered semantic search for tickets (Enhanced with Hybrid Search)
+// @desc    AI-powered semantic search for tickets using MongoDB Atlas Vector Search
 // @route   GET /api/qa/ai-search
 // @access  Private
 exports.aiSemanticSearch = async (req, res) => {
@@ -989,119 +1008,233 @@ exports.aiSemanticSearch = async (req, res) => {
       return res.status(400).json({ message: 'Could not generate query embedding' });
     }
 
-    // Build filter object
-    const filter = {
-      embedding: { $exists: true, $ne: null }
-    };
+    // Step 3: Build pre-filter for $vectorSearch
+    const vectorFilter = {};
 
     // Archive filter
     if (isArchived !== undefined) {
-      filter.isArchived = isArchived === 'true';
-
-      // Only filter by user if viewing active tickets
+      vectorFilter.isArchived = isArchived === 'true';
       if (isArchived === 'false') {
-        filter.createdBy = req.user._id;
+        vectorFilter.createdBy = req.user._id;
       }
     } else {
-      // Default: show only active tickets for current user
-      filter.isArchived = false;
-      filter.createdBy = req.user._id;
+      vectorFilter.isArchived = false;
+      vectorFilter.createdBy = req.user._id;
     }
 
-    // Additional filters
-    if (agent) filter.agent = agent;
-    if (status) filter.status = { $in: status.split(',') };
-    if (category) filter.category = { $in: category.split(',') };
-    if (priority) filter.priority = { $in: priority.split(',') };
+    // Additional filters (only simple equality/in supported by $vectorSearch filter)
+    if (agent) vectorFilter.agent = new require('mongoose').Types.ObjectId(agent);
+    if (status) vectorFilter.status = { $in: status.split(',') };
+    if (category) vectorFilter.category = { $in: category.split(',') };
+    if (priority) vectorFilter.priority = { $in: priority.split(',') };
 
-    if (dateFrom || dateTo) {
-      filter.dateEntered = {};
-      if (dateFrom) filter.dateEntered.$gte = new Date(dateFrom);
-      if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
-    }
+    // Try MongoDB Atlas $vectorSearch first (server-side, memory efficient)
+    // Falls back to in-memory search if Atlas Vector Search index doesn't exist
+    let results = [];
+    let usedVectorSearch = false;
 
-    if (scoreMin !== undefined || scoreMax !== undefined) {
-      filter.qualityScorePercent = {};
-      if (scoreMin !== undefined) filter.qualityScorePercent.$gte = parseFloat(scoreMin);
-      if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
-    }
+    try {
+      // MongoDB Atlas Vector Search - runs on database server, not in Node.js memory
+      const vectorSearchPipeline = [
+        {
+          $vectorSearch: {
+            index: 'ticket_embedding_index', // Must be created in Atlas
+            path: 'embedding',
+            queryVector: queryEmbedding,
+            numCandidates: 500, // Candidates to consider (higher = more accurate, slower)
+            limit: parseInt(limit) * 2, // Get more to allow for post-filtering
+            filter: vectorFilter
+          }
+        },
+        {
+          $project: {
+            _id: 1,
+            ticketId: 1,
+            shortDescription: 1,
+            notes: 1,
+            feedback: 1,
+            status: 1,
+            dateEntered: 1,
+            qualityScorePercent: 1,
+            category: 1,
+            priority: 1,
+            tags: 1,
+            agent: 1,
+            createdBy: 1,
+            isArchived: 1,
+            vectorScore: { $meta: 'vectorSearchScore' }
+          }
+        },
+        // Populate agent
+        {
+          $lookup: {
+            from: 'agents',
+            localField: 'agent',
+            foreignField: '_id',
+            as: 'agentData',
+            pipeline: [{ $project: { name: 1, team: 1, position: 1 } }]
+          }
+        },
+        {
+          $unwind: { path: '$agentData', preserveNullAndEmptyArrays: true }
+        },
+        // Populate createdBy
+        {
+          $lookup: {
+            from: 'users',
+            localField: 'createdBy',
+            foreignField: '_id',
+            as: 'createdByData',
+            pipeline: [{ $project: { name: 1, email: 1 } }]
+          }
+        },
+        {
+          $unwind: { path: '$createdByData', preserveNullAndEmptyArrays: true }
+        },
+        {
+          $project: {
+            _id: 1,
+            ticketId: 1,
+            shortDescription: 1,
+            notes: 1,
+            feedback: 1,
+            status: 1,
+            dateEntered: 1,
+            qualityScorePercent: 1,
+            category: 1,
+            priority: 1,
+            tags: 1,
+            isArchived: 1,
+            agent: '$agentData',
+            createdBy: '$createdByData',
+            relevanceScore: { $multiply: ['$vectorScore', 100] }
+          }
+        }
+      ];
 
-    // MEMORY OPTIMIZATION: Limit tickets loaded and process in batches
-    // Max 500 tickets to prevent OOM on low-memory servers
-    const MAX_TICKETS_FOR_SEARCH = 500;
+      // Apply date/score filters after vector search (not supported in $vectorSearch filter)
+      if (dateFrom || dateTo || scoreMin !== undefined || scoreMax !== undefined) {
+        const matchStage = {};
+        if (dateFrom) matchStage.dateEntered = { ...matchStage.dateEntered, $gte: new Date(dateFrom) };
+        if (dateTo) matchStage.dateEntered = { ...matchStage.dateEntered, $lte: new Date(dateTo) };
+        if (scoreMin !== undefined) matchStage.qualityScorePercent = { ...matchStage.qualityScorePercent, $gte: parseFloat(scoreMin) };
+        if (scoreMax !== undefined) matchStage.qualityScorePercent = { ...matchStage.qualityScorePercent, $lte: parseFloat(scoreMax) };
+        vectorSearchPipeline.push({ $match: matchStage });
+      }
 
-    // First, get count to check if we need to limit
-    const totalCount = await Ticket.countDocuments(filter);
+      vectorSearchPipeline.push({ $limit: parseInt(limit) });
 
-    // If too many tickets, add date filter to get most recent
-    if (totalCount > MAX_TICKETS_FOR_SEARCH) {
-      // Sort by date and limit
-      logger.info(`AI Search: Limiting from ${totalCount} to ${MAX_TICKETS_FOR_SEARCH} tickets for memory safety`);
-    }
+      results = await Ticket.aggregate(vectorSearchPipeline);
+      usedVectorSearch = true;
 
-    // Step 3: Fetch tickets with embeddings (limited for memory safety)
-    const tickets = await Ticket.find(filter)
-      .select('+embedding ticketId shortDescription notes feedback status dateEntered qualityScorePercent category priority tags agent createdBy isArchived')
-      .populate('agent', 'name team position')
-      .populate('createdBy', 'name email')
-      .sort({ dateEntered: -1 })
-      .limit(MAX_TICKETS_FOR_SEARCH)
-      .lean();
+      // Round relevance scores
+      results = results.map(r => ({
+        ...r,
+        relevanceScore: Math.round(r.relevanceScore)
+      }));
 
-    // Step 4: Hybrid Search - Process in memory-efficient way
-    const results = [];
-    for (const ticket of tickets) {
-      if (!ticket.embedding) continue;
+      logger.info(`AI Search (Atlas Vector): query="${query}", results=${results.length}`);
 
-      // Semantic score (cosine similarity)
-      const semanticScore = cosineSimilarity(queryEmbedding, ticket.embedding) * 100;
-
-      // Keyword score (exact word matches)
-      const keywordScore = calculateKeywordScore(query, ticket);
-
-      // Hybrid score: 70% semantic + 30% keyword
-      const hybridScore = (semanticScore * 0.7) + (keywordScore * 0.3);
-
-      // Only keep results above minimum threshold to save memory
-      if (hybridScore > 20) {
-        results.push({
-          _id: ticket._id,
-          ticketId: ticket.ticketId,
-          shortDescription: ticket.shortDescription,
-          notes: ticket.notes,
-          feedback: ticket.feedback,
-          status: ticket.status,
-          dateEntered: ticket.dateEntered,
-          qualityScorePercent: ticket.qualityScorePercent,
-          category: ticket.category,
-          priority: ticket.priority,
-          tags: ticket.tags,
-          agent: ticket.agent,
-          createdBy: ticket.createdBy,
-          isArchived: ticket.isArchived,
-          relevanceScore: Math.round(hybridScore),
-          semanticScore: Math.round(semanticScore),
-          keywordScore: Math.round(keywordScore)
-          // embedding explicitly NOT included
-        });
+    } catch (vectorSearchError) {
+      // If Atlas Vector Search index doesn't exist, fall back to streaming approach
+      if (vectorSearchError.codeName === 'InvalidPipelineOperator' ||
+          vectorSearchError.message?.includes('$vectorSearch') ||
+          vectorSearchError.message?.includes('index not found')) {
+        logger.warn('Atlas Vector Search not available, using streaming fallback');
+        usedVectorSearch = false;
+      } else {
+        throw vectorSearchError;
       }
     }
 
-    // Step 5: Sort by hybrid relevance score
-    results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+    // Fallback: Stream-based search if Atlas Vector Search is not available
+    if (!usedVectorSearch) {
+      // Build standard MongoDB filter
+      const filter = { embedding: { $exists: true, $ne: null } };
 
-    // Step 6: Dynamic threshold based on best match
-    const bestScore = results.length > 0 ? results[0].relevanceScore : 0;
-    const threshold = bestScore > 70 ? 35 : 25;
+      if (isArchived !== undefined) {
+        filter.isArchived = isArchived === 'true';
+        if (isArchived === 'false') filter.createdBy = req.user._id;
+      } else {
+        filter.isArchived = false;
+        filter.createdBy = req.user._id;
+      }
 
-    const filteredResults = results
-      .filter(r => r.relevanceScore > threshold)
-      .slice(0, parseInt(limit));
+      if (agent) filter.agent = agent;
+      if (status) filter.status = { $in: status.split(',') };
+      if (category) filter.category = { $in: category.split(',') };
+      if (priority) filter.priority = { $in: priority.split(',') };
 
-    // Log search stats for debugging
-    logger.info(`AI Search: query="${query}", processed="${processedQuery}", ticketsSearched=${tickets.length}, results=${filteredResults.length}, bestScore=${bestScore}, threshold=${threshold}`);
+      if (dateFrom || dateTo) {
+        filter.dateEntered = {};
+        if (dateFrom) filter.dateEntered.$gte = new Date(dateFrom);
+        if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
+      }
 
-    res.json(filteredResults);
+      if (scoreMin !== undefined || scoreMax !== undefined) {
+        filter.qualityScorePercent = {};
+        if (scoreMin !== undefined) filter.qualityScorePercent.$gte = parseFloat(scoreMin);
+        if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
+      }
+
+      // Use cursor to stream through ALL tickets without loading all into memory
+      const cursor = Ticket.find(filter)
+        .select('+embedding ticketId shortDescription notes feedback status dateEntered qualityScorePercent category priority tags agent createdBy isArchived')
+        .populate('agent', 'name team position')
+        .populate('createdBy', 'name email')
+        .cursor();
+
+      // Process tickets in streaming fashion, keeping only top results
+      const MAX_RESULTS = parseInt(limit) * 2;
+      let processedCount = 0;
+
+      for await (const ticket of cursor) {
+        if (!ticket.embedding) continue;
+        processedCount++;
+
+        // Calculate similarity score
+        const semanticScore = cosineSimilarity(queryEmbedding, ticket.embedding) * 100;
+        const keywordScore = calculateKeywordScore(query, ticket);
+        const hybridScore = (semanticScore * 0.7) + (keywordScore * 0.3);
+
+        // Only keep results above minimum threshold
+        if (hybridScore > 25) {
+          results.push({
+            _id: ticket._id,
+            ticketId: ticket.ticketId,
+            shortDescription: ticket.shortDescription,
+            notes: ticket.notes,
+            feedback: ticket.feedback,
+            status: ticket.status,
+            dateEntered: ticket.dateEntered,
+            qualityScorePercent: ticket.qualityScorePercent,
+            category: ticket.category,
+            priority: ticket.priority,
+            tags: ticket.tags,
+            agent: ticket.agent,
+            createdBy: ticket.createdBy,
+            isArchived: ticket.isArchived,
+            relevanceScore: Math.round(hybridScore),
+            semanticScore: Math.round(semanticScore),
+            keywordScore: Math.round(keywordScore)
+          });
+
+          // Keep results sorted and limited to prevent memory growth
+          if (results.length > MAX_RESULTS) {
+            results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+            results = results.slice(0, MAX_RESULTS);
+          }
+        }
+      }
+
+      // Final sort
+      results.sort((a, b) => b.relevanceScore - a.relevanceScore);
+      results = results.slice(0, parseInt(limit));
+
+      logger.info(`AI Search (Streaming): query="${query}", processed="${processedQuery}", ticketsProcessed=${processedCount}, results=${results.length}`);
+    }
+
+    res.json(results);
   } catch (error) {
     logger.error('AI search error:', error);
     res.status(500).json({ message: 'Server error' });
