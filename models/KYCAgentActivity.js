@@ -28,6 +28,12 @@ const kycAgentActivitySchema = new mongoose.Schema({
     type: String,
     index: true
   },
+  // The specific message the agent reacted to (⏳)
+  // This is important when multiple messages are in the same thread
+  parentMessageTs: {
+    type: String,
+    index: true
+  },
   messageTs: {
     type: String
   },
@@ -86,6 +92,7 @@ kycAgentActivitySchema.index({ agentId: 1, activityDate: 1 });
 kycAgentActivitySchema.index({ agentId: 1, shift: 1, activityDate: 1 });
 kycAgentActivitySchema.index({ activityDate: 1, shift: 1 });
 kycAgentActivitySchema.index({ threadTs: 1, activityType: 1 });
+kycAgentActivitySchema.index({ parentMessageTs: 1, activityType: 1 });
 
 // Helper to determine shift based on hour (Belgrade timezone)
 kycAgentActivitySchema.statics.getShiftFromHour = function(hour) {
@@ -112,17 +119,18 @@ kycAgentActivitySchema.statics.getBelgradeHour = function(date) {
 
 // Static method to record ticket taken (⏳ reaction added)
 kycAgentActivitySchema.statics.recordTicketTaken = async function(data) {
-  const { agentId, agentSlackId, threadTs, reactionTs, channelId } = data;
+  const { agentId, agentSlackId, threadTs, parentMessageTs, reactionTs, channelId } = data;
 
   const reactionDate = new Date(parseFloat(reactionTs) * 1000);
   const hour = this.getBelgradeHour(reactionDate);
   const shift = this.getShiftFromHour(hour);
   const activityDate = this.getBelgradeDateString(reactionDate);
 
-  // Check if already recorded
+  // Check if already recorded - use parentMessageTs for uniqueness
+  // This allows multiple tickets in the same thread (different messages)
   const existing = await this.findOne({
     agentSlackId,
-    threadTs,
+    parentMessageTs,
     activityType: 'ticket_taken'
   });
 
@@ -135,6 +143,7 @@ kycAgentActivitySchema.statics.recordTicketTaken = async function(data) {
     agentSlackId,
     activityType: 'ticket_taken',
     threadTs,
+    parentMessageTs, // The specific message agent reacted to
     reactionTs,
     reactionAddedAt: reactionDate,
     shift,
@@ -156,24 +165,31 @@ kycAgentActivitySchema.statics.recordMessage = async function(data) {
 
   // If it's a thread reply, try to calculate response time
   let responseTimeSeconds = null;
+  let matchedParentMessageTs = null;
+
   if (isThreadReply && threadTs) {
-    // Find the ticket_taken activity for this thread by this agent
+    // Find the most recent ticket_taken by this agent in this thread
+    // that doesn't have a first reply yet (meaning this is the first response to that ticket)
+    // OR find the ticket where reaction was added just before this message
     const ticketTaken = await this.findOne({
       agentSlackId,
       threadTs,
-      activityType: 'ticket_taken'
-    });
+      activityType: 'ticket_taken',
+      firstReplyTs: null, // No reply yet
+      reactionAddedAt: { $lt: messageDate } // Reaction was before this message
+    }).sort({ reactionAddedAt: -1 }); // Get the most recent one
 
     if (ticketTaken && ticketTaken.reactionAddedAt) {
       responseTimeSeconds = Math.floor((messageDate - ticketTaken.reactionAddedAt) / 1000);
+      matchedParentMessageTs = ticketTaken.parentMessageTs;
 
-      // Update the ticket_taken record with first reply info if not already set
-      if (!ticketTaken.firstReplyTs) {
-        ticketTaken.firstReplyTs = messageTs;
-        ticketTaken.firstReplyAt = messageDate;
-        ticketTaken.responseTimeSeconds = responseTimeSeconds;
-        await ticketTaken.save();
-      }
+      // Update the ticket_taken record with first reply info
+      ticketTaken.firstReplyTs = messageTs;
+      ticketTaken.firstReplyAt = messageDate;
+      ticketTaken.responseTimeSeconds = responseTimeSeconds;
+      await ticketTaken.save();
+
+      console.log(`✅ Matched reply to ticket for message ${ticketTaken.parentMessageTs}, response time: ${responseTimeSeconds}s`);
     }
   }
 
@@ -182,6 +198,7 @@ kycAgentActivitySchema.statics.recordMessage = async function(data) {
     agentSlackId,
     activityType,
     threadTs,
+    parentMessageTs: matchedParentMessageTs, // Link to the ticket this reply is for
     messageTs,
     messagePreview: messagePreview?.substring(0, 200),
     shift,

@@ -176,10 +176,13 @@ const handleReactionAdded = async (event) => {
     }
 
     // Record the ticket taken activity
+    // event.item.ts is the timestamp of the message the reaction was added to
+    // This could be the original thread message OR a message within the thread
     await KYCAgentActivity.recordTicketTaken({
       agentId: agent._id,
       agentSlackId: event.user,
-      threadTs: event.item.ts,
+      threadTs: event.item.ts, // For thread tracking
+      parentMessageTs: event.item.ts, // The specific message reacted to
       reactionTs: event.event_ts,
       channelId: event.item.channel
     });
