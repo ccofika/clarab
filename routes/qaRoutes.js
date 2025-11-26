@@ -47,6 +47,7 @@ const {
 const {
   // Analytics controllers
   getAnalytics,
+  getGraders,
   // AI Assistant controllers
   aiAssistant,
   getAISessions,
@@ -159,6 +160,7 @@ router.post('/generate-all-embeddings', generateAllTicketEmbeddings);
 // ============================================
 
 router.get('/analytics', getAnalytics);
+router.get('/analytics/graders', getGraders);
 
 // ============================================
 // AI ASSISTANT ROUTES

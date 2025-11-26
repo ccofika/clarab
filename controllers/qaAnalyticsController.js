@@ -4,13 +4,60 @@ const QASession = require('../models/QASession');
 const logger = require('../utils/logger');
 const { generateEmbedding, cosineSimilarity, qaAssistant } = require('../utils/openai');
 
+// Admin emails who can view other graders' analytics
+const ADMIN_EMAILS = ['filipkozomara@mebit.io', 'nevena@mebit.io'];
+
+// QA Grader emails for filtering
+const QA_GRADERS = [
+  { email: 'vasilijevitorovic@mebit.io', name: 'Vasilije Vitorovic' },
+  { email: 'jovangajic@mebit.io', name: 'Jovan Gajic' },
+  { email: 'mladenjovanovic@mebit.io', name: 'Mladen Jovanovic' },
+  { email: 'filipkozomara@mebit.io', name: 'Filip Kozomara' },
+  { email: 'nevena@mebit.io', name: 'Nevena' }
+];
+
+// @desc    Get list of QA graders (for admin filter)
+// @route   GET /api/qa/analytics/graders
+// @access  Private (Admin only)
+exports.getGraders = async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+
+    // Only admins can see grader list
+    if (!ADMIN_EMAILS.includes(userEmail)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    // Get users who have created tickets (actual graders)
+    const User = require('../models/User');
+    const graders = await User.find({
+      email: { $in: QA_GRADERS.map(g => g.email) }
+    }).select('_id name email');
+
+    res.json(graders);
+  } catch (error) {
+    logger.error('Error fetching graders:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // @desc    Get comprehensive analytics
 // @route   GET /api/qa/analytics
 // @access  Private
 exports.getAnalytics = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { timeRange = '30d' } = req.query;
+    const userEmail = req.user.email;
+    const { timeRange = '30d', graderId } = req.query;
+
+    // Determine which user's data to show
+    let targetUserId = userId;
+    const isAdmin = ADMIN_EMAILS.includes(userEmail);
+
+    // If admin and graderId provided, show that grader's data
+    if (isAdmin && graderId && graderId !== 'all') {
+      targetUserId = graderId;
+    }
 
     // Calculate date range
     const now = new Date();
@@ -33,11 +80,24 @@ exports.getAnalytics = async (req, res) => {
         startDate.setDate(now.getDate() - 30);
     }
 
-    // Get all tickets in range
-    const tickets = await Ticket.find({
-      createdBy: userId,
+    // Build ticket filter
+    const ticketFilter = {
       dateEntered: { $gte: startDate }
-    }).populate('agent', 'name team');
+    };
+
+    // If admin selected "all", get all graders' tickets
+    if (isAdmin && graderId === 'all') {
+      const User = require('../models/User');
+      const graderUsers = await User.find({
+        email: { $in: QA_GRADERS.map(g => g.email) }
+      }).select('_id');
+      ticketFilter.createdBy = { $in: graderUsers.map(u => u._id) };
+    } else {
+      ticketFilter.createdBy = targetUserId;
+    }
+
+    // Get all tickets in range
+    const tickets = await Ticket.find(ticketFilter).populate('agent', 'name team');
 
     const totalTickets = tickets.length;
     const gradedTickets = tickets.filter(t => t.status === 'Graded').length;

@@ -56,8 +56,9 @@ router.get('/google', (req, res, next) => {
   passport.authenticate('google', {
     scope: [
       'profile',
-      'email',
-      'https://www.googleapis.com/auth/spreadsheets.readonly'
+      'email'
+      // Google Sheets scope temporarily disabled - uncomment to re-enable Affiliate Bonus Finder
+      // 'https://www.googleapis.com/auth/spreadsheets.readonly'
     ],
     accessType: 'offline',
     prompt: 'consent',
