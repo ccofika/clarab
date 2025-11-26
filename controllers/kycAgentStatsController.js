@@ -622,6 +622,77 @@ exports.getStatsByShift = async (req, res) => {
 };
 
 /**
+ * Get activity feed
+ * GET /api/kyc-stats/activity-feed
+ */
+exports.getActivityFeed = async (req, res) => {
+  try {
+    const { startDate, endDate, activityType, agentId, limit = 100 } = req.query;
+
+    // Default to last 7 days
+    const end = endDate || KYCAgentActivity.getBelgradeDateString(new Date());
+    const start = startDate || KYCAgentActivity.getBelgradeDateString(
+      new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    );
+
+    // Build match query
+    const match = {
+      activityDate: { $gte: start, $lte: end }
+    };
+
+    if (activityType) {
+      match.activityType = activityType;
+    }
+
+    if (agentId) {
+      const mongoose = require('mongoose');
+      match.agentId = new mongoose.Types.ObjectId(agentId);
+    }
+
+    // Fetch activities with agent info
+    const activities = await KYCAgentActivity.aggregate([
+      { $match: match },
+      { $sort: { createdAt: -1 } },
+      { $limit: parseInt(limit, 10) },
+      {
+        $lookup: {
+          from: 'kycagents',
+          localField: 'agentId',
+          foreignField: '_id',
+          as: 'agentInfo'
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          activityType: 1,
+          agentId: 1,
+          agentSlackId: 1,
+          agentName: { $arrayElemAt: ['$agentInfo.name', 0] },
+          threadTs: 1,
+          messagePreview: 1,
+          responseTimeSeconds: 1,
+          shift: 1,
+          activityDate: 1,
+          reactionAddedAt: 1,
+          firstReplyAt: 1,
+          createdAt: 1
+        }
+      }
+    ]);
+
+    res.json({
+      success: true,
+      dateRange: { start, end },
+      activities
+    });
+  } catch (error) {
+    console.error('Error fetching activity feed:', error);
+    res.status(500).json({ message: 'Failed to fetch activity feed', error: error.message });
+  }
+};
+
+/**
  * Get configuration status
  * GET /api/kyc-stats/config-status
  */

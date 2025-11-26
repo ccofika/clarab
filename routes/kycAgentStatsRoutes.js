@@ -17,6 +17,7 @@ const {
   getAgentStats,
   getLeaderboard,
   getStatsByShift,
+  getActivityFeed,
 
   // Config
   getConfigStatus
@@ -70,6 +71,7 @@ router.route('/agents/:id')
 router.get('/overview', getOverview);
 router.get('/leaderboard', getLeaderboard);
 router.get('/by-shift', getStatsByShift);
+router.get('/activity-feed', getActivityFeed);
 router.get('/agent/:id', getAgentStats);
 
 // ============================================
