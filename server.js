@@ -167,6 +167,7 @@ const chatRoutes = require('./routes/chatRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
 const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
+const pushRoutes = require('./routes/pushRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -184,6 +185,7 @@ app.use('/api/chat', chatRoutes); // Chat endpoints
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
 app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
+app.use('/api/push', pushRoutes); // Push notifications
 
 // Root route
 app.get('/', (req, res) => {

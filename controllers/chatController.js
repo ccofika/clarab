@@ -5,6 +5,7 @@ const mongoose = require('mongoose');
 const cloudinary = require('../config/cloudinary');
 const multer = require('multer');
 const { Readable } = require('stream');
+const { sendMessageNotification, sendMentionNotification } = require('../utils/pushNotification');
 
 // QA team email whitelist
 const QA_ALLOWED_EMAILS = [
@@ -283,10 +284,11 @@ exports.getMessages = async (req, res) => {
       return res.status(403).json({ message: 'Not a member of this channel' });
     }
 
-    // Build query
+    // Build query - exclude thread replies from main view (they show in thread panel)
     const query = {
       channel: channelId,
-      isDeleted: false
+      isDeleted: false,
+      isThreadReply: { $ne: true } // Don't show thread replies in main channel
     };
 
     if (before) {
@@ -297,6 +299,7 @@ exports.getMessages = async (req, res) => {
       .populate('sender', 'name email avatar')
       .populate('metadata.replyTo.sender', 'name avatar')
       .populate('reactions.users', 'name avatar')
+      .populate('threadParticipants', 'name avatar') // For showing thread participants
       .sort({ createdAt: -1 })
       .limit(parseInt(limit));
 
@@ -324,7 +327,10 @@ exports.getMessages = async (req, res) => {
 // Send a message
 exports.sendMessage = async (req, res) => {
   try {
-    const { channelId, content, type, metadata } = req.body;
+    const { channelId, content, type, metadata, parentMessageId, sendToChannel } = req.body;
+    // For thread replies, default to NOT sending to channel (user must explicitly check the box)
+    // For regular messages, always show in channel
+    const shouldSendToChannel = parentMessageId ? (sendToChannel === true) : true;
     const userId = req.user._id;
 
     const channel = await ChatChannel.findById(channelId);
@@ -354,6 +360,33 @@ exports.sendMessage = async (req, res) => {
       }
     }
 
+    // Handle thread reply
+    let parentMessage = null;
+    let isThreadReply = false;
+    if (parentMessageId) {
+      parentMessage = await ChatMessage.findById(parentMessageId)
+        .populate('sender', 'name avatar');
+      if (!parentMessage) {
+        return res.status(404).json({ message: 'Parent message not found' });
+      }
+      isThreadReply = true;
+
+      // Add thread info to metadata for "also send to channel" display
+      if (shouldSendToChannel) {
+        processedMetadata.alsoSendToChannel = true;
+        processedMetadata.threadParent = {
+          messageId: parentMessage._id,
+          content: parentMessage.content.substring(0, 100),
+          sender: {
+            _id: parentMessage.sender._id,
+            name: parentMessage.sender.name
+          },
+          // Track this reply's position in thread (for "View X newer replies")
+          replyPosition: (parentMessage.replyCount || 0) + 1
+        };
+      }
+    }
+
     // Create message
     const message = await ChatMessage.create({
       channel: channelId,
@@ -361,8 +394,15 @@ exports.sendMessage = async (req, res) => {
       content,
       type: type || 'text',
       metadata: processedMetadata,
-      readBy: [{ userId, readAt: new Date() }] // Sender has read it
+      readBy: [{ userId, readAt: new Date() }], // Sender has read it
+      parentMessage: parentMessageId || null,
+      isThreadReply: isThreadReply
     });
+
+    // Update parent message's thread stats if this is a thread reply
+    if (parentMessage) {
+      await parentMessage.addThreadReply(message);
+    }
 
     // Update channel's last message and auto-unarchive if archived
     channel.lastMessage = {
@@ -414,6 +454,10 @@ exports.sendMessage = async (req, res) => {
           channel: { _id: channel._id, name: channel.name }
         });
       }
+
+      // Send push notification for mention (high priority)
+      sendMentionNotification(populatedMessage, channel, mentionedUserId)
+        .catch(err => console.error('Mention push notification error:', err));
     }
 
     // Create activity for replies
@@ -439,6 +483,49 @@ exports.sendMessage = async (req, res) => {
           });
         }
       }
+    }
+
+    // Send push notifications to all channel members (except sender)
+    // This works even when the user's tab is closed or inactive
+    try {
+      // Get all member IDs except sender
+      const memberIds = channel.members
+        .map(m => m.userId.toString())
+        .filter(memberId => memberId !== userId.toString());
+
+      // Get users who have muted this channel
+      const usersWithMutes = await User.find({
+        _id: { $in: memberIds },
+        'mutedChannels.channel': channelId
+      }).select('_id mutedChannels');
+
+      // Filter out muted users (check if mute is still active)
+      const now = new Date();
+      const mutedUserIds = usersWithMutes
+        .filter(user => {
+          const muteEntry = user.mutedChannels.find(
+            mc => mc.channel.toString() === channelId
+          );
+          // Muted forever (null) or not yet expired
+          return muteEntry && (muteEntry.mutedUntil === null || muteEntry.mutedUntil > now);
+        })
+        .map(user => user._id.toString());
+
+      // Get users to notify (not muted)
+      const usersToNotify = memberIds.filter(id => !mutedUserIds.includes(id));
+
+      // Send push notifications asynchronously (don't block response)
+      if (usersToNotify.length > 0) {
+        // Don't await - let it run in background
+        Promise.all(
+          usersToNotify.map(recipientId =>
+            sendMessageNotification(populatedMessage, channel, recipientId, userId)
+          )
+        ).catch(err => console.error('Push notification error:', err));
+      }
+    } catch (pushError) {
+      // Log but don't fail the request if push fails
+      console.error('Error sending push notifications:', pushError);
     }
 
     res.status(201).json(populatedMessage);
@@ -647,50 +734,316 @@ exports.togglePinMessage = async (req, res) => {
   }
 };
 
-// Search messages
+// Search messages - Advanced search with modifiers
+// Supports: from:@user, in:#channel, before:date, after:date, has:reaction, has:file, has:link
 exports.searchMessages = async (req, res) => {
   try {
-    const { query, channelId, limit = 20 } = req.query;
+    const {
+      query,
+      channelId,
+      limit = 30,
+      // Advanced filters
+      fromUserId,
+      inChannelId,
+      beforeDate,
+      afterDate,
+      hasReaction,
+      hasFile,
+      hasLink,
+      isPinned,
+      // Pagination
+      page = 1
+    } = req.query;
     const userId = req.user._id;
 
-    if (!query) {
-      return res.status(400).json({ message: 'Search query is required' });
-    }
+    // Get all channels user is member of
+    const userChannels = await ChatChannel.find({
+      'members.userId': userId
+    }).select('_id name type');
+    const userChannelIds = userChannels.map(c => c._id);
 
     // Build search query
     const searchQuery = {
-      $text: { $search: query },
       isDeleted: false
     };
 
-    // Filter by channel if provided
-    if (channelId) {
+    // Text search if query provided
+    if (query && query.trim()) {
+      // Parse modifiers from query string
+      let cleanQuery = query;
+      const modifiers = {};
+
+      // Parse from:@username or from:username
+      const fromMatch = cleanQuery.match(/from:@?(\S+)/i);
+      if (fromMatch) {
+        modifiers.fromUser = fromMatch[1];
+        cleanQuery = cleanQuery.replace(fromMatch[0], '').trim();
+      }
+
+      // Parse in:#channel or in:channel
+      const inMatch = cleanQuery.match(/in:#?(\S+)/i);
+      if (inMatch) {
+        modifiers.inChannel = inMatch[1];
+        cleanQuery = cleanQuery.replace(inMatch[0], '').trim();
+      }
+
+      // Parse before:date (YYYY-MM-DD or relative like "yesterday", "last week")
+      const beforeMatch = cleanQuery.match(/before:(\S+)/i);
+      if (beforeMatch) {
+        modifiers.before = parseRelativeDate(beforeMatch[1]);
+        cleanQuery = cleanQuery.replace(beforeMatch[0], '').trim();
+      }
+
+      // Parse after:date
+      const afterMatch = cleanQuery.match(/after:(\S+)/i);
+      if (afterMatch) {
+        modifiers.after = parseRelativeDate(afterMatch[1]);
+        cleanQuery = cleanQuery.replace(afterMatch[0], '').trim();
+      }
+
+      // Parse has:reaction, has:file, has:link, has:pin
+      const hasMatches = cleanQuery.match(/has:(\S+)/gi);
+      if (hasMatches) {
+        hasMatches.forEach(match => {
+          const hasType = match.split(':')[1].toLowerCase();
+          modifiers[`has${hasType.charAt(0).toUpperCase() + hasType.slice(1)}`] = true;
+          cleanQuery = cleanQuery.replace(match, '').trim();
+        });
+      }
+
+      // Apply text search if there's remaining query
+      if (cleanQuery.trim()) {
+        searchQuery.$text = { $search: cleanQuery };
+      }
+
+      // Apply from: modifier
+      if (modifiers.fromUser || fromUserId) {
+        const searchName = modifiers.fromUser || fromUserId;
+        // Find user by name or ID
+        const user = await User.findOne({
+          $or: [
+            { _id: mongoose.Types.ObjectId.isValid(searchName) ? searchName : null },
+            { name: { $regex: searchName, $options: 'i' } },
+            { email: { $regex: searchName, $options: 'i' } }
+          ]
+        });
+        if (user) {
+          searchQuery.sender = user._id;
+        } else {
+          // No user found, return empty results
+          return res.json({ messages: [], total: 0, page: 1, totalPages: 0 });
+        }
+      }
+
+      // Apply in: modifier
+      if (modifiers.inChannel || inChannelId) {
+        const searchChannel = modifiers.inChannel || inChannelId;
+        // Find channel by name or ID
+        const channel = await ChatChannel.findOne({
+          $and: [
+            { _id: { $in: userChannelIds } },
+            {
+              $or: [
+                { _id: mongoose.Types.ObjectId.isValid(searchChannel) ? searchChannel : null },
+                { name: { $regex: searchChannel, $options: 'i' } }
+              ]
+            }
+          ]
+        });
+        if (channel) {
+          searchQuery.channel = channel._id;
+        } else {
+          return res.json({ messages: [], total: 0, page: 1, totalPages: 0 });
+        }
+      }
+
+      // Apply date modifiers
+      if (modifiers.before || beforeDate) {
+        searchQuery.createdAt = searchQuery.createdAt || {};
+        searchQuery.createdAt.$lt = new Date(modifiers.before || beforeDate);
+      }
+
+      if (modifiers.after || afterDate) {
+        searchQuery.createdAt = searchQuery.createdAt || {};
+        searchQuery.createdAt.$gt = new Date(modifiers.after || afterDate);
+      }
+
+      // Apply has: modifiers
+      if (modifiers.hasReaction || hasReaction === 'true') {
+        searchQuery['reactions.0'] = { $exists: true };
+      }
+
+      if (modifiers.hasFile || hasFile === 'true') {
+        searchQuery['metadata.files.0'] = { $exists: true };
+      }
+
+      if (modifiers.hasLink || hasLink === 'true') {
+        searchQuery.content = { $regex: /https?:\/\/[^\s]+/i };
+      }
+
+      if (modifiers.hasPin || isPinned === 'true') {
+        searchQuery.isPinned = true;
+      }
+    }
+
+    // Filter by specific channel if provided (overrides in: modifier)
+    if (channelId && !searchQuery.channel) {
       const channel = await ChatChannel.findById(channelId);
       if (!channel || !channel.isMember(userId)) {
         return res.status(403).json({ message: 'Access denied' });
       }
       searchQuery.channel = channelId;
-    } else {
-      // Search only in channels user is member of
-      const userChannels = await ChatChannel.find({
-        'members.userId': userId
-      }).select('_id');
-
-      searchQuery.channel = { $in: userChannels.map((c) => c._id) };
     }
 
-    const messages = await ChatMessage.find(searchQuery, {
-      score: { $meta: 'textScore' }
-    })
-      .sort({ score: { $meta: 'textScore' } })
+    // If no channel filter, search all user's channels
+    if (!searchQuery.channel) {
+      searchQuery.channel = { $in: userChannelIds };
+    }
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Get total count for pagination
+    const total = await ChatMessage.countDocuments(searchQuery);
+
+    // Build the query
+    let messagesQuery = ChatMessage.find(searchQuery);
+
+    // If text search, sort by relevance
+    if (searchQuery.$text) {
+      messagesQuery = ChatMessage.find(searchQuery, { score: { $meta: 'textScore' } })
+        .sort({ score: { $meta: 'textScore' }, createdAt: -1 });
+    } else {
+      messagesQuery = messagesQuery.sort({ createdAt: -1 });
+    }
+
+    const messages = await messagesQuery
+      .skip(skip)
+      .limit(parseInt(limit))
+      .populate('sender', 'name email avatar')
+      .populate('channel', 'name type members')
+      .populate('reactions.users', 'name avatar');
+
+    // Get channel info for display
+    const channelsMap = {};
+    userChannels.forEach(ch => {
+      channelsMap[ch._id.toString()] = ch;
+    });
+
+    res.json({
+      messages,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit)),
+      channels: userChannels // Return available channels for filter UI
+    });
+  } catch (error) {
+    console.error('Error searching messages:', error);
+    res.status(500).json({ message: 'Error searching messages' });
+  }
+};
+
+// Helper function to parse relative dates
+function parseRelativeDate(dateStr) {
+  const now = new Date();
+  const lower = dateStr.toLowerCase();
+
+  switch (lower) {
+    case 'today':
+      return new Date(now.setHours(23, 59, 59, 999));
+    case 'yesterday':
+      return new Date(now.setDate(now.getDate() - 1));
+    case 'week':
+    case 'thisweek':
+    case 'this-week':
+      const startOfWeek = new Date(now);
+      startOfWeek.setDate(now.getDate() - now.getDay());
+      return startOfWeek;
+    case 'lastweek':
+    case 'last-week':
+      return new Date(now.setDate(now.getDate() - 7));
+    case 'month':
+    case 'thismonth':
+    case 'this-month':
+      return new Date(now.getFullYear(), now.getMonth(), 1);
+    case 'lastmonth':
+    case 'last-month':
+      return new Date(now.setMonth(now.getMonth() - 1));
+    default:
+      // Try to parse as date
+      const parsed = new Date(dateStr);
+      return isNaN(parsed.getTime()) ? now : parsed;
+  }
+}
+
+// Search files in messages
+exports.searchFiles = async (req, res) => {
+  try {
+    const { query, channelId, limit = 20, page = 1 } = req.query;
+    const userId = req.user._id;
+
+    // Get all channels user is member of
+    const userChannels = await ChatChannel.find({
+      'members.userId': userId
+    }).select('_id');
+    const userChannelIds = userChannels.map(c => c._id);
+
+    // Build search query for messages with files
+    const searchQuery = {
+      isDeleted: false,
+      'metadata.files.0': { $exists: true },
+      channel: channelId ? channelId : { $in: userChannelIds }
+    };
+
+    // If query provided, search in file names
+    if (query && query.trim()) {
+      searchQuery['metadata.files.name'] = { $regex: query, $options: 'i' };
+    }
+
+    // Validate channel access
+    if (channelId) {
+      const channel = await ChatChannel.findById(channelId);
+      if (!channel || !channel.isMember(userId)) {
+        return res.status(403).json({ message: 'Access denied' });
+      }
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const total = await ChatMessage.countDocuments(searchQuery);
+
+    const messages = await ChatMessage.find(searchQuery)
+      .sort({ createdAt: -1 })
+      .skip(skip)
       .limit(parseInt(limit))
       .populate('sender', 'name email avatar')
       .populate('channel', 'name type');
 
-    res.json(messages);
+    // Extract files from messages
+    const files = [];
+    messages.forEach(msg => {
+      if (msg.metadata?.files) {
+        msg.metadata.files.forEach(file => {
+          files.push({
+            ...file,
+            messageId: msg._id,
+            channelId: msg.channel._id,
+            channelName: msg.channel.name,
+            sender: msg.sender,
+            createdAt: msg.createdAt
+          });
+        });
+      }
+    });
+
+    res.json({
+      files,
+      total,
+      page: parseInt(page),
+      totalPages: Math.ceil(total / parseInt(limit))
+    });
   } catch (error) {
-    console.error('Error searching messages:', error);
-    res.status(500).json({ message: 'Error searching messages' });
+    console.error('Error searching files:', error);
+    res.status(500).json({ message: 'Error searching files' });
   }
 };
 
@@ -1097,6 +1450,174 @@ exports.getStarredChannels = async (req, res) => {
       message: 'Failed to fetch starred channels',
       error: error.message
     });
+  }
+};
+
+// ============================================
+// THREAD ENDPOINTS
+// ============================================
+
+// Get all threads user participates in
+exports.getUserThreads = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { limit = 20, skip = 0, channelId } = req.query;
+
+    // Get user's channels to filter threads
+    const userChannels = await ChatChannel.find({
+      'members.userId': userId
+    }).select('_id');
+    const channelIds = userChannels.map(ch => ch._id);
+
+    // If specific channel requested, filter by it
+    const filterChannelIds = channelId ? [channelId] : channelIds;
+
+    const threads = await ChatMessage.getUserThreads(userId, {
+      limit: parseInt(limit),
+      skip: parseInt(skip),
+      channelIds: filterChannelIds
+    });
+
+    // Get unread status for each thread
+    const threadsWithUnread = threads.map(thread => {
+      const follower = thread.threadFollowers?.find(
+        f => f.userId.toString() === userId.toString()
+      );
+      const lastReadAt = follower?.lastReadAt || new Date(0);
+      const hasUnread = thread.lastReplyAt && thread.lastReplyAt > lastReadAt;
+
+      return {
+        ...thread,
+        hasUnread,
+        isFollowing: follower?.following ?? true
+      };
+    });
+
+    // Get total unread count
+    const unreadCount = await ChatMessage.getUnreadThreadCount(userId, channelIds);
+
+    res.json({
+      threads: threadsWithUnread,
+      unreadCount,
+      hasMore: threads.length === parseInt(limit)
+    });
+  } catch (error) {
+    console.error('Error fetching user threads:', error);
+    res.status(500).json({ message: 'Error fetching threads' });
+  }
+};
+
+// Get thread replies
+exports.getThreadReplies = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { limit = 50, before } = req.query;
+    const userId = req.user._id;
+
+    // Get parent message
+    const parentMessage = await ChatMessage.findById(messageId)
+      .populate('sender', 'name email avatar')
+      .populate('channel', 'name type')
+      .populate('threadParticipants', 'name avatar');
+
+    if (!parentMessage) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    // Check if user has access to this channel
+    const channel = await ChatChannel.findById(parentMessage.channel._id || parentMessage.channel);
+    if (!channel || !channel.isMember(userId)) {
+      return res.status(403).json({ message: 'Not a member of this channel' });
+    }
+
+    // Get thread replies
+    const replies = await ChatMessage.getThreadReplies(messageId, {
+      limit: parseInt(limit),
+      before
+    });
+
+    // Mark thread as read for this user
+    await parentMessage.markThreadAsRead(userId);
+
+    res.json({
+      parentMessage,
+      replies,
+      hasMore: replies.length === parseInt(limit)
+    });
+  } catch (error) {
+    console.error('Error fetching thread replies:', error);
+    res.status(500).json({ message: 'Error fetching thread replies' });
+  }
+};
+
+// Toggle thread following
+exports.toggleThreadFollow = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { follow } = req.body;
+    const userId = req.user._id;
+
+    const message = await ChatMessage.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    // Only allow following threads (parent messages)
+    if (message.parentMessage) {
+      return res.status(400).json({ message: 'Can only follow parent messages (thread starters)' });
+    }
+
+    await message.toggleThreadFollow(userId, follow);
+
+    res.json({
+      success: true,
+      following: follow
+    });
+  } catch (error) {
+    console.error('Error toggling thread follow:', error);
+    res.status(500).json({ message: 'Error toggling thread follow' });
+  }
+};
+
+// Mark thread as read
+exports.markThreadAsRead = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user._id;
+
+    const message = await ChatMessage.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({ message: 'Message not found' });
+    }
+
+    await message.markThreadAsRead(userId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error marking thread as read:', error);
+    res.status(500).json({ message: 'Error marking thread as read' });
+  }
+};
+
+// Get unread thread count
+exports.getUnreadThreadCount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Get user's channels
+    const userChannels = await ChatChannel.find({
+      'members.userId': userId
+    }).select('_id');
+    const channelIds = userChannels.map(ch => ch._id);
+
+    const count = await ChatMessage.getUnreadThreadCount(userId, channelIds);
+
+    res.json({ unreadCount: count });
+  } catch (error) {
+    console.error('Error getting unread thread count:', error);
+    res.status(500).json({ message: 'Error getting unread count' });
   }
 };
 

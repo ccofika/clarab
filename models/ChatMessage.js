@@ -137,6 +137,32 @@ const chatMessageSchema = new mongoose.Schema(
           type: mongoose.Schema.Types.ObjectId,
           ref: 'User'
         }
+      },
+      // For thread replies sent to channel ("Also send to channel")
+      alsoSendToChannel: {
+        type: Boolean,
+        default: false
+      },
+      threadParent: {
+        messageId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'ChatMessage'
+        },
+        content: {
+          type: String
+        },
+        sender: {
+          _id: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: 'User'
+          },
+          name: {
+            type: String
+          }
+        },
+        replyPosition: {
+          type: Number
+        }
       }
     },
     reactions: [
@@ -206,6 +232,48 @@ const chatMessageSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'
       }
+    ],
+    // Thread support
+    parentMessage: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ChatMessage',
+      default: null,
+      index: true
+    },
+    isThreadReply: {
+      type: Boolean,
+      default: false
+    },
+    replyCount: {
+      type: Number,
+      default: 0
+    },
+    threadParticipants: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
+    lastReplyAt: {
+      type: Date,
+      default: null
+    },
+    // Thread notification settings per user
+    threadFollowers: [
+      {
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User'
+        },
+        following: {
+          type: Boolean,
+          default: true
+        },
+        lastReadAt: {
+          type: Date,
+          default: null
+        }
+      }
     ]
   },
   {
@@ -219,6 +287,11 @@ chatMessageSchema.index({ sender: 1, createdAt: -1 });
 chatMessageSchema.index({ isPinned: 1, channel: 1 });
 chatMessageSchema.index({ 'readBy.userId': 1 });
 chatMessageSchema.index({ mentions: 1 });
+// Thread indexes
+chatMessageSchema.index({ parentMessage: 1, createdAt: 1 });
+chatMessageSchema.index({ replyCount: -1, lastReplyAt: -1 });
+chatMessageSchema.index({ threadParticipants: 1 });
+chatMessageSchema.index({ 'threadFollowers.userId': 1 });
 
 // Text index for search functionality
 chatMessageSchema.index({ content: 'text' });
@@ -312,6 +385,151 @@ chatMessageSchema.pre('save', function (next) {
   }
   next();
 });
+
+// Static method to get all threads a user participates in
+chatMessageSchema.statics.getUserThreads = async function (userId, options = {}) {
+  const { limit = 20, skip = 0, channelIds = [] } = options;
+
+  const query = {
+    $or: [
+      { sender: userId, replyCount: { $gt: 0 } }, // Threads user started
+      { threadParticipants: userId }, // Threads user replied to
+      { 'threadFollowers.userId': userId } // Threads user follows
+    ],
+    parentMessage: null, // Only parent messages (thread starters)
+    isDeleted: false
+  };
+
+  // Filter by channels if provided
+  if (channelIds.length > 0) {
+    query.channel = { $in: channelIds };
+  }
+
+  return this.find(query)
+    .sort({ lastReplyAt: -1, createdAt: -1 })
+    .skip(skip)
+    .limit(limit)
+    .populate('sender', 'name avatar email')
+    .populate('channel', 'name type')
+    .populate('threadParticipants', 'name avatar')
+    .lean();
+};
+
+// Static method to get thread replies
+chatMessageSchema.statics.getThreadReplies = async function (parentMessageId, options = {}) {
+  const { limit = 50, before = null } = options;
+
+  const query = {
+    parentMessage: parentMessageId,
+    isDeleted: false
+  };
+
+  if (before) {
+    query.createdAt = { $lt: new Date(before) };
+  }
+
+  return this.find(query)
+    .sort({ createdAt: 1 })
+    .limit(limit)
+    .populate('sender', 'name avatar email')
+    .populate('metadata.replyTo.sender', 'name avatar')
+    .lean();
+};
+
+// Static method to get unread thread count for a user
+chatMessageSchema.statics.getUnreadThreadCount = async function (userId, channelIds = []) {
+  const query = {
+    $or: [
+      { sender: userId, replyCount: { $gt: 0 } },
+      { threadParticipants: userId },
+      { 'threadFollowers.userId': userId, 'threadFollowers.following': true }
+    ],
+    parentMessage: null,
+    isDeleted: false
+  };
+
+  if (channelIds.length > 0) {
+    query.channel = { $in: channelIds };
+  }
+
+  const threads = await this.find(query).lean();
+
+  let unreadCount = 0;
+  for (const thread of threads) {
+    const follower = thread.threadFollowers?.find(
+      f => f.userId.toString() === userId.toString()
+    );
+    const lastReadAt = follower?.lastReadAt || new Date(0);
+
+    if (thread.lastReplyAt && thread.lastReplyAt > lastReadAt) {
+      unreadCount++;
+    }
+  }
+
+  return unreadCount;
+};
+
+// Method to add a reply to thread
+chatMessageSchema.methods.addThreadReply = async function (replyMessage) {
+  // Update parent message
+  if (!this.threadParticipants.includes(replyMessage.sender)) {
+    this.threadParticipants.push(replyMessage.sender);
+  }
+  this.replyCount += 1;
+  this.lastReplyAt = new Date();
+
+  // Auto-follow the thread for the reply sender if not already following
+  const existingFollower = this.threadFollowers.find(
+    f => f.userId.toString() === replyMessage.sender.toString()
+  );
+  if (!existingFollower) {
+    this.threadFollowers.push({
+      userId: replyMessage.sender,
+      following: true,
+      lastReadAt: new Date()
+    });
+  }
+
+  return this.save();
+};
+
+// Method to toggle thread following
+chatMessageSchema.methods.toggleThreadFollow = async function (userId, follow) {
+  const existingFollower = this.threadFollowers.find(
+    f => f.userId.toString() === userId.toString()
+  );
+
+  if (existingFollower) {
+    existingFollower.following = follow;
+  } else {
+    this.threadFollowers.push({
+      userId,
+      following: follow,
+      lastReadAt: new Date()
+    });
+  }
+
+  return this.save();
+};
+
+// Method to mark thread as read for user
+chatMessageSchema.methods.markThreadAsRead = async function (userId) {
+  const existingFollower = this.threadFollowers.find(
+    f => f.userId.toString() === userId.toString()
+  );
+
+  if (existingFollower) {
+    existingFollower.lastReadAt = new Date();
+  } else {
+    this.threadFollowers.push({
+      userId,
+      following: true,
+      lastReadAt: new Date()
+    });
+  }
+
+  return this.save();
+};
 
 const ChatMessage = mongoose.model('ChatMessage', chatMessageSchema);
 

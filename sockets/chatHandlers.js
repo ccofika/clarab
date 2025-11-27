@@ -307,6 +307,76 @@ module.exports = (io, socket) => {
     }
   });
 
+  // Thread reply sent - broadcast to thread followers
+  socket.on('chat:thread:reply', async (data) => {
+    try {
+      const { parentMessageId, channelId, message } = data;
+
+      console.log(`🧵 Thread reply event for parent ${parentMessageId}`);
+
+      // Get parent message to find thread followers
+      const parentMessage = await ChatMessage.findById(parentMessageId)
+        .populate('threadFollowers.userId', '_id');
+
+      if (!parentMessage) {
+        console.error(`❌ Parent message ${parentMessageId} not found`);
+        return;
+      }
+
+      // Broadcast to channel (thread replies are visible in channel too if also sent)
+      io.to(`chat:${channelId}`).emit('chat:thread:new_reply', {
+        parentMessageId,
+        channelId,
+        message,
+        timestamp: new Date()
+      });
+
+      // Also emit update for parent message's reply count
+      io.to(`chat:${channelId}`).emit('chat:message:updated', {
+        messageId: parentMessageId,
+        channelId,
+        replyCount: parentMessage.replyCount,
+        lastReplyAt: parentMessage.lastReplyAt,
+        threadParticipants: parentMessage.threadParticipants
+      });
+
+      // Notify thread followers individually
+      if (parentMessage.threadFollowers) {
+        parentMessage.threadFollowers.forEach((follower) => {
+          if (follower.following && follower.userId._id.toString() !== userId) {
+            io.to(`user:${follower.userId._id}`).emit('thread:new_reply', {
+              parentMessageId,
+              channelId,
+              message,
+              timestamp: new Date()
+            });
+          }
+        });
+      }
+
+      console.log(`✅ Thread reply broadcasted for ${parentMessageId}`);
+    } catch (error) {
+      console.error('Error broadcasting thread reply:', error);
+    }
+  });
+
+  // Thread follow status changed
+  socket.on('chat:thread:follow', async (data) => {
+    try {
+      const { parentMessageId, following } = data;
+
+      console.log(`🔔 User ${userId} ${following ? 'followed' : 'unfollowed'} thread ${parentMessageId}`);
+
+      // Acknowledge to the user
+      socket.emit('chat:thread:follow:success', {
+        parentMessageId,
+        following
+      });
+    } catch (error) {
+      console.error('Error handling thread follow:', error);
+    }
+  });
+
   // Channel created
   socket.on('chat:channel:created', async (data) => {
     try {

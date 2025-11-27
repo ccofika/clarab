@@ -37,8 +37,16 @@ router.post('/channels/:channelId/star', chatController.starChannel);
 router.delete('/channels/:channelId/star', chatController.unstarChannel);
 router.get('/starred', chatController.getStarredChannels);
 
-// Search route
+// Search routes
 router.get('/search', chatController.searchMessages);
+router.get('/search/files', chatController.searchFiles);
+
+// Thread routes
+router.get('/threads', chatController.getUserThreads);
+router.get('/threads/unread-count', chatController.getUnreadThreadCount);
+router.get('/messages/:messageId/thread', chatController.getThreadReplies);
+router.post('/messages/:messageId/thread/follow', chatController.toggleThreadFollow);
+router.post('/messages/:messageId/thread/read', chatController.markThreadAsRead);
 
 // File upload route
 router.post('/upload', chatController.uploadFile, chatController.uploadChatFile);
