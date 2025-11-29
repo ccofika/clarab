@@ -108,7 +108,8 @@ const getCanvasElements = async (req, res) => {
     const elements = await CanvasElement.find({ canvas: req.params.canvasId })
       .sort({ 'position.z': 1 })
       .populate('createdBy', 'name email')
-      .populate('lastEditedBy', 'name email');
+      .populate('lastEditedBy', 'name email')
+      .populate('category', 'name icon color');
 
     res.json(elements);
   } catch (error) {

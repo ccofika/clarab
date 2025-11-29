@@ -168,6 +168,7 @@ const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
 const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
 const pushRoutes = require('./routes/pushRoutes');
+const categoryRoutes = require('./routes/categoryRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -186,6 +187,7 @@ app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
 app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
 app.use('/api/push', pushRoutes); // Push notifications
+app.use('/api/categories', categoryRoutes); // Category management for WorkspaceNavigation
 
 // Root route
 app.get('/', (req, res) => {

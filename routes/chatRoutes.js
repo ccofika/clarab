@@ -16,6 +16,15 @@ router.post('/channels/:channelId/mute', chatController.toggleMuteChannel);
 router.get('/muted', chatController.getMutedChannels);
 router.get('/channels/:channelId/mute-status', chatController.getChannelMuteStatus);
 
+// Channel notification settings
+router.get('/channels/:channelId/notifications', chatController.getChannelNotificationSettings);
+router.put('/channels/:channelId/notifications', chatController.updateChannelNotificationSettings);
+router.get('/notification-settings', chatController.getAllNotificationSettings);
+
+// Convert DM to group & Leave channel
+router.post('/channels/:channelId/convert-to-group', chatController.convertDMToGroup);
+router.post('/channels/:channelId/leave', chatController.leaveChannel);
+
 // Message routes
 router.get('/channels/:channelId/messages', chatController.getMessages);
 router.post('/messages', chatController.sendMessage);

@@ -118,6 +118,24 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  // Per-channel notification settings
+  channelNotificationSettings: [{
+    channel: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'ChatChannel',
+      required: true
+    },
+    // 'all' = all messages, 'mentions' = only @mentions, 'nothing' = no notifications
+    notifyOn: {
+      type: String,
+      enum: ['all', 'mentions', 'nothing'],
+      default: 'all'
+    },
+    updatedAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
   // Account lockout fields
   loginAttempts: {
     type: Number,

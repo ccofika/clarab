@@ -17,6 +17,12 @@ const chatChannelSchema = new mongoose.Schema(
       trim: true,
       default: ''
     },
+    topic: {
+      type: String,
+      trim: true,
+      maxlength: 250,
+      default: ''
+    },
     avatar: {
       type: String,
       default: null

@@ -341,6 +341,12 @@ const canvasElementSchema = new mongoose.Schema({
     type: Boolean,
     default: false // Locked elements can't be moved/edited
   },
+  // Category for procedure organization (mainly for wrapper elements)
+  category: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Category',
+    default: null
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -368,6 +374,7 @@ const canvasElementSchema = new mongoose.Schema({
 canvasElementSchema.index({ canvas: 1 });
 canvasElementSchema.index({ canvas: 1, 'position.z': 1 });
 canvasElementSchema.index({ type: 1 });
+canvasElementSchema.index({ category: 1 }); // For category-based navigation
 
 // Text search indexes for search functionality
 canvasElementSchema.index({ 'content.value': 'text' });

@@ -144,7 +144,7 @@ exports.createChannel = async (req, res) => {
 exports.updateChannel = async (req, res) => {
   try {
     const { channelId } = req.params;
-    const { name, description, avatar, memberIds } = req.body;
+    const { name, description, topic, avatar, memberIds } = req.body;
     const userId = req.user._id;
 
     const channel = await ChatChannel.findById(channelId);
@@ -163,6 +163,7 @@ exports.updateChannel = async (req, res) => {
     // Update basic info
     if (name !== undefined) channel.name = name;
     if (description !== undefined) channel.description = description;
+    if (topic !== undefined) channel.topic = topic;
     if (avatar !== undefined) channel.avatar = avatar;
 
     // Update members if provided
@@ -493,26 +494,45 @@ exports.sendMessage = async (req, res) => {
         .map(m => m.userId.toString())
         .filter(memberId => memberId !== userId.toString());
 
-      // Get users who have muted this channel
-      const usersWithMutes = await User.find({
-        _id: { $in: memberIds },
-        'mutedChannels.channel': channelId
-      }).select('_id mutedChannels');
+      // Get users with their mute and notification settings
+      const usersWithSettings = await User.find({
+        _id: { $in: memberIds }
+      }).select('_id mutedChannels channelNotificationSettings');
 
-      // Filter out muted users (check if mute is still active)
+      // Check if message has mentions
+      const mentionRegex = /@\[([^\]]+)\]\(([^)]+)\)/g;
+      const mentionedUserIds = [];
+      let mentionMatch;
+      while ((mentionMatch = mentionRegex.exec(content)) !== null) {
+        mentionedUserIds.push(mentionMatch[2]);
+      }
+
+      // Filter users based on mute status and notification settings
       const now = new Date();
-      const mutedUserIds = usersWithMutes
-        .filter(user => {
-          const muteEntry = user.mutedChannels.find(
-            mc => mc.channel.toString() === channelId
-          );
-          // Muted forever (null) or not yet expired
-          return muteEntry && (muteEntry.mutedUntil === null || muteEntry.mutedUntil > now);
-        })
-        .map(user => user._id.toString());
+      const usersToNotify = usersWithSettings.filter(user => {
+        const recipientId = user._id.toString();
 
-      // Get users to notify (not muted)
-      const usersToNotify = memberIds.filter(id => !mutedUserIds.includes(id));
+        // Check if muted
+        const muteEntry = user.mutedChannels?.find(
+          mc => mc.channel.toString() === channelId
+        );
+        const isMuted = muteEntry && (muteEntry.mutedUntil === null || muteEntry.mutedUntil > now);
+        if (isMuted) return false;
+
+        // Check notification settings
+        const notifySetting = user.channelNotificationSettings?.find(
+          ns => ns.channel.toString() === channelId
+        );
+        const notifyOn = notifySetting?.notifyOn || 'all'; // Default to 'all'
+
+        if (notifyOn === 'nothing') return false;
+        if (notifyOn === 'mentions') {
+          // Only notify if user is mentioned
+          return mentionedUserIds.includes(recipientId);
+        }
+        // 'all' - notify for all messages
+        return true;
+      }).map(user => user._id.toString());
 
       // Send push notifications asynchronously (don't block response)
       if (usersToNotify.length > 0) {
@@ -1618,6 +1638,240 @@ exports.getUnreadThreadCount = async (req, res) => {
   } catch (error) {
     console.error('Error getting unread thread count:', error);
     res.status(500).json({ message: 'Error getting unread count' });
+  }
+};
+
+// ============================================
+// CHANNEL NOTIFICATION SETTINGS
+// ============================================
+
+// Get channel notification settings
+exports.getChannelNotificationSettings = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user._id;
+
+    const user = await User.findById(userId).select('channelNotificationSettings');
+
+    const setting = user.channelNotificationSettings?.find(
+      s => s.channel.toString() === channelId
+    );
+
+    res.json({
+      channelId,
+      notifyOn: setting?.notifyOn || 'all', // Default to 'all' if not set
+      updatedAt: setting?.updatedAt || null
+    });
+  } catch (error) {
+    console.error('Error getting notification settings:', error);
+    res.status(500).json({ message: 'Error getting notification settings' });
+  }
+};
+
+// Update channel notification settings
+exports.updateChannelNotificationSettings = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const { notifyOn } = req.body; // 'all', 'mentions', or 'nothing'
+    const userId = req.user._id;
+
+    // Validate notifyOn value
+    if (!['all', 'mentions', 'nothing'].includes(notifyOn)) {
+      return res.status(400).json({ message: 'Invalid notification setting. Must be: all, mentions, or nothing' });
+    }
+
+    // Verify channel exists and user is member
+    const channel = await ChatChannel.findById(channelId);
+    if (!channel) {
+      return res.status(404).json({ message: 'Channel not found' });
+    }
+    if (!channel.isMember(userId)) {
+      return res.status(403).json({ message: 'Not a member of this channel' });
+    }
+
+    const user = await User.findById(userId);
+
+    // Find existing setting
+    const settingIndex = user.channelNotificationSettings?.findIndex(
+      s => s.channel.toString() === channelId
+    );
+
+    if (settingIndex !== undefined && settingIndex !== -1) {
+      // Update existing
+      user.channelNotificationSettings[settingIndex].notifyOn = notifyOn;
+      user.channelNotificationSettings[settingIndex].updatedAt = new Date();
+    } else {
+      // Add new
+      if (!user.channelNotificationSettings) {
+        user.channelNotificationSettings = [];
+      }
+      user.channelNotificationSettings.push({
+        channel: channelId,
+        notifyOn,
+        updatedAt: new Date()
+      });
+    }
+
+    await user.save();
+
+    res.json({
+      success: true,
+      channelId,
+      notifyOn,
+      message: `Notifications set to: ${notifyOn}`
+    });
+  } catch (error) {
+    console.error('Error updating notification settings:', error);
+    res.status(500).json({ message: 'Error updating notification settings' });
+  }
+};
+
+// Get all channel notification settings for user
+exports.getAllNotificationSettings = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await User.findById(userId)
+      .select('channelNotificationSettings')
+      .populate({
+        path: 'channelNotificationSettings.channel',
+        select: 'name type'
+      });
+
+    res.json({
+      settings: user.channelNotificationSettings || []
+    });
+  } catch (error) {
+    console.error('Error getting all notification settings:', error);
+    res.status(500).json({ message: 'Error getting notification settings' });
+  }
+};
+
+// ============================================
+// CONVERT DM TO GROUP CHANNEL
+// ============================================
+
+// Convert DM to group channel
+exports.convertDMToGroup = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const { name, description } = req.body;
+    const userId = req.user._id;
+
+    const channel = await ChatChannel.findById(channelId);
+
+    if (!channel) {
+      return res.status(404).json({ message: 'Channel not found' });
+    }
+
+    // Check if it's a DM
+    if (channel.type !== 'dm') {
+      return res.status(400).json({ message: 'Only DM channels can be converted to group' });
+    }
+
+    // Check if user is a member
+    if (!channel.isMember(userId)) {
+      return res.status(403).json({ message: 'Not a member of this channel' });
+    }
+
+    // Validate name
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Group name is required' });
+    }
+
+    // Convert to group
+    channel.type = 'group';
+    channel.name = name.trim();
+    if (description) {
+      channel.description = description.trim();
+    }
+
+    // Make the user who converts the admin
+    const memberIndex = channel.members.findIndex(
+      m => m.userId.toString() === userId.toString()
+    );
+    if (memberIndex !== -1) {
+      channel.members[memberIndex].role = 'admin';
+    }
+
+    await channel.save();
+
+    const updatedChannel = await ChatChannel.findById(channelId)
+      .populate('members.userId', 'name email avatar')
+      .populate('workspace', 'name');
+
+    res.json({
+      success: true,
+      message: 'DM converted to group channel successfully',
+      channel: updatedChannel
+    });
+  } catch (error) {
+    console.error('Error converting DM to group:', error);
+    res.status(500).json({ message: 'Error converting DM to group' });
+  }
+};
+
+// ============================================
+// LEAVE CHANNEL
+// ============================================
+
+// Leave channel (separate from delete to provide confirmation support)
+exports.leaveChannel = async (req, res) => {
+  try {
+    const { channelId } = req.params;
+    const userId = req.user._id;
+
+    const channel = await ChatChannel.findById(channelId);
+
+    if (!channel) {
+      return res.status(404).json({ message: 'Channel not found' });
+    }
+
+    if (!channel.isMember(userId)) {
+      return res.status(403).json({ message: 'Not a member of this channel' });
+    }
+
+    // Can't leave DM channels
+    if (channel.type === 'dm') {
+      return res.status(400).json({ message: 'Cannot leave DM channels. Archive it instead.' });
+    }
+
+    // If user is the only admin, they can't leave unless they transfer admin or delete
+    const isAdmin = channel.isAdmin(userId);
+    const adminCount = channel.members.filter(m => m.role === 'admin').length;
+
+    if (isAdmin && adminCount === 1 && channel.members.length > 1) {
+      return res.status(400).json({
+        message: 'You are the only admin. Please make someone else admin before leaving, or delete the channel.'
+      });
+    }
+
+    // Remove user from members
+    channel.members = channel.members.filter(
+      m => m.userId.toString() !== userId.toString()
+    );
+
+    // If no members left, delete the channel
+    if (channel.members.length === 0) {
+      await ChatMessage.deleteMany({ channel: channelId });
+      await ChatChannel.findByIdAndDelete(channelId);
+      return res.json({
+        success: true,
+        message: 'Left channel successfully. Channel deleted (no members remaining).',
+        channelDeleted: true
+      });
+    }
+
+    await channel.save();
+
+    res.json({
+      success: true,
+      message: 'Left channel successfully',
+      channelDeleted: false
+    });
+  } catch (error) {
+    console.error('Error leaving channel:', error);
+    res.status(500).json({ message: 'Error leaving channel' });
   }
 };
 
