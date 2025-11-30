@@ -13,12 +13,14 @@ const jwt = require('jsonwebtoken');
 const configurePassport = require('./config/passport');
 const connectDB = require('./config/db');
 const seedAnnouncementsWorkspace = require('./utils/seedAnnouncements');
+const seedActiveIssuesWorkspace = require('./utils/seedActiveIssues');
 const User = require('./models/User');
 
 // Connect to database
 connectDB().then(() => {
-  // Seed announcements workspace after DB connection
+  // Seed public workspaces after DB connection
   seedAnnouncementsWorkspace();
+  seedActiveIssuesWorkspace();
 });
 
 const app = express();
@@ -169,6 +171,10 @@ const sectionRoutes = require('./routes/sectionRoutes');
 const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
 const pushRoutes = require('./routes/pushRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
+const issueRoutes = require('./routes/issueRoutes');
+const systemComponentRoutes = require('./routes/systemComponentRoutes');
+const maintenanceRoutes = require('./routes/maintenanceRoutes');
+const statusSubscriptionRoutes = require('./routes/statusSubscriptionRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -188,6 +194,10 @@ app.use('/api/sections', sectionRoutes); // Channel sections/organization
 app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
 app.use('/api/push', pushRoutes); // Push notifications
 app.use('/api/categories', categoryRoutes); // Category management for WorkspaceNavigation
+app.use('/api/issues', issueRoutes); // Active Issues tracking
+app.use('/api/system-components', systemComponentRoutes); // System component status
+app.use('/api/maintenance', maintenanceRoutes); // Scheduled maintenance
+app.use('/api/status-subscriptions', statusSubscriptionRoutes); // Status page subscriptions
 
 // Root route
 app.get('/', (req, res) => {

@@ -18,12 +18,6 @@ const agentSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, 'Team cannot exceed 100 characters']
   },
-  periodStart: {
-    type: Date
-  },
-  periodEnd: {
-    type: Date
-  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -56,12 +50,5 @@ agentSchema.virtual('ticketCount', {
   foreignField: 'agent',
   count: true
 });
-
-// Method to check if agent is in current period
-agentSchema.methods.isInCurrentPeriod = function() {
-  const now = new Date();
-  if (!this.periodStart || !this.periodEnd) return true;
-  return now >= this.periodStart && now <= this.periodEnd;
-};
 
 module.exports = mongoose.model('Agent', agentSchema);

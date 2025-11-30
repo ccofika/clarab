@@ -11,6 +11,7 @@ const getWorkspaces = async (req, res) => {
       $or: [
         { owner: req.user._id },
         { type: 'announcements' },
+        { type: 'active-issues' },
         { 'members.user': req.user._id },
         { invitedMembers: req.user._id }
       ]

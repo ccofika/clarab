@@ -109,3 +109,60 @@ exports.adminOrDeveloper = (req, res, next) => {
     res.status(403).json({ message: 'Not authorized - admin or developer access required' });
   }
 };
+
+// Aliases for readability
+exports.developerOrAdmin = exports.adminOrDeveloper;
+exports.adminOnly = exports.admin;
+
+// Optional authentication - doesn't fail if no token, but sets user if valid token exists
+exports.optionalAuth = async (req, res, next) => {
+  try {
+    let token;
+
+    // Check Authorization header first
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+    // Fallback to cookie
+    else if (req.cookies && req.cookies[COOKIE_NAMES.ACCESS_TOKEN]) {
+      token = req.cookies[COOKIE_NAMES.ACCESS_TOKEN];
+    }
+
+    // No token - continue without user (public access)
+    if (!token) {
+      return next();
+    }
+
+    // Try to verify token
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, {
+      algorithms: ['HS256']
+    });
+
+    // Check if token is revoked
+    if (decoded.jti) {
+      const isRevoked = await RevokedToken.isRevoked(decoded.jti);
+      if (isRevoked) {
+        return next(); // Continue without user
+      }
+    }
+
+    // Load user
+    const user = await User.findById(decoded.id).select('-password');
+
+    if (user) {
+      // Check user-level token invalidation
+      if (user.tokenValidAfter) {
+        const tokenIssuedAt = new Date(decoded.iat * 1000);
+        if (tokenIssuedAt < user.tokenValidAfter) {
+          return next(); // Continue without user
+        }
+      }
+      req.user = user;
+    }
+
+    next();
+  } catch (error) {
+    // On any error, continue without user (public access)
+    next();
+  }
+};

@@ -8,7 +8,7 @@ const workspaceSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['announcements', 'personal'],
+    enum: ['announcements', 'personal', 'active-issues'],
     required: true
   },
   owner: {
@@ -37,7 +37,7 @@ const workspaceSchema = new mongoose.Schema({
   isPublic: {
     type: Boolean,
     default: function() {
-      return this.type === 'announcements'; // Announcements is public by default
+      return this.type === 'announcements' || this.type === 'active-issues'; // Public workspaces
     }
   },
   settings: {
@@ -94,8 +94,8 @@ function extractMemberId(member) {
 
 // Methods for permission checking
 workspaceSchema.methods.canEdit = function(userId, userRole) {
-  // Announcements can only be edited by admins or developers
-  if (this.type === 'announcements') {
+  // Announcements and Active Issues can only be edited by admins or developers
+  if (this.type === 'announcements' || this.type === 'active-issues') {
     return userRole === 'admin' || userRole === 'developer';
   }
 
@@ -108,8 +108,8 @@ workspaceSchema.methods.canEdit = function(userId, userRole) {
 };
 
 workspaceSchema.methods.canDelete = function(userId, userRole) {
-  // Cannot delete announcements workspace
-  if (this.type === 'announcements') return false;
+  // Cannot delete announcements or active-issues workspace
+  if (this.type === 'announcements' || this.type === 'active-issues') return false;
 
   // Only owner can delete their own workspace
   const ownerId = extractId(this.owner);
@@ -141,11 +141,11 @@ workspaceSchema.methods.canView = function(userId) {
 workspaceSchema.methods.canEditContent = function(userId, userRole) {
   const userIdStr = userId.toString();
 
-  // Admin or Developer can edit content in announcements
-  if (this.type === 'announcements' && (userRole === 'admin' || userRole === 'developer')) return true;
+  // Admin or Developer can edit content in announcements and active-issues
+  if ((this.type === 'announcements' || this.type === 'active-issues') && (userRole === 'admin' || userRole === 'developer')) return true;
 
-  // In announcements, only admin or developer can edit
-  if (this.type === 'announcements') return false;
+  // In announcements or active-issues, only admin or developer can edit
+  if (this.type === 'announcements' || this.type === 'active-issues') return false;
 
   // Owner can edit content in their workspace
   const ownerId = extractId(this.owner);

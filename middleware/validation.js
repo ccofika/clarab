@@ -180,20 +180,6 @@ const schemas = {
       .allow('')
       .messages({
         'string.max': 'Team must not exceed 100 characters'
-      }),
-    periodStart: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Period start must be a valid ISO date'
-      }),
-    periodEnd: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
-      .messages({
-        'date.format': 'Period end must be a valid ISO date'
       })
   }),
 
@@ -212,15 +198,7 @@ const schemas = {
       .max(100)
       .trim()
       .optional()
-      .allow(''),
-    periodStart: Joi.date()
-      .iso()
-      .optional()
-      .allow(null),
-    periodEnd: Joi.date()
-      .iso()
-      .optional()
-      .allow(null)
+      .allow('')
   }),
 
   // QA Manager - Ticket validation

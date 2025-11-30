@@ -330,14 +330,20 @@ exports.getAllTickets = async (req, res) => {
     // Build filter object
     const filter = {};
 
+    // Get createdBy filter (grader) from query params
+    const { createdBy: createdByFilter } = req.query;
+
     // IMPORTANT: If viewing active tickets (not archived), filter by current user
-    // If viewing archived tickets, show all tickets (for all QA agents)
+    // If viewing archived tickets, show all tickets (for all QA agents) unless filtered
     if (isArchived !== undefined) {
       filter.isArchived = isArchived === 'true';
 
       // Only filter by user if viewing active tickets
       if (isArchived === 'false') {
         filter.createdBy = req.user._id;
+      } else if (createdByFilter) {
+        // For archived tickets, allow filtering by grader (createdBy)
+        filter.createdBy = createdByFilter;
       }
     } else {
       // Default: show only active tickets for current user
@@ -359,10 +365,18 @@ exports.getAllTickets = async (req, res) => {
       if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
     }
 
-    if (scoreMin !== undefined || scoreMax !== undefined) {
+    // Score range filter - handle both string and number inputs
+    const scoreMinNum = scoreMin !== undefined && scoreMin !== '' ? parseFloat(scoreMin) : null;
+    const scoreMaxNum = scoreMax !== undefined && scoreMax !== '' ? parseFloat(scoreMax) : null;
+
+    if ((scoreMinNum !== null && !isNaN(scoreMinNum)) || (scoreMaxNum !== null && !isNaN(scoreMaxNum))) {
       filter.qualityScorePercent = {};
-      if (scoreMin !== undefined) filter.qualityScorePercent.$gte = parseFloat(scoreMin);
-      if (scoreMax !== undefined) filter.qualityScorePercent.$lte = parseFloat(scoreMax);
+      if (scoreMinNum !== null && !isNaN(scoreMinNum)) {
+        filter.qualityScorePercent.$gte = scoreMinNum;
+      }
+      if (scoreMaxNum !== null && !isNaN(scoreMaxNum)) {
+        filter.qualityScorePercent.$lte = scoreMaxNum;
+      }
     }
 
     // New filters
