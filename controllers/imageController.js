@@ -27,6 +27,9 @@ const uploadImage = async (req, res) => {
       return res.status(400).json({ message: 'No image file provided' });
     }
 
+    // Determine folder based on request parameter (default to canvas-elements)
+    const folder = req.query.folder === 'tickets' ? 'clara/tickets' : 'clara/canvas-elements';
+
     // Convert buffer to stream
     const stream = Readable.from(req.file.buffer);
 
@@ -34,7 +37,7 @@ const uploadImage = async (req, res) => {
     const uploadPromise = new Promise((resolve, reject) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         {
-          folder: 'clara/canvas-elements', // Organized folder structure
+          folder: folder, // Organized folder structure
           resource_type: 'image',
           allowed_formats: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'svg'],
           transformation: [

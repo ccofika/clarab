@@ -865,20 +865,10 @@ exports.exportMaestro = async (req, res) => {
     // Create CSV content - just ticket IDs, one per line
     const csvContent = tickets.map(ticket => ticket.ticketId).join('\n');
 
-    // Format dates for filename
-    const formatDate = (dateString) => {
-      const date = new Date(dateString);
-      const day = String(date.getDate()).padStart(2, '0');
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const year = date.getFullYear();
-      return `${day}.${month}.${year}`;
-    };
-
-    const dateFromFormatted = weekStart ? formatDate(weekStart) : '';
-    const dateToFormatted = weekEnd ? formatDate(weekEnd) : '';
+    // Generate filename
     const agentNameClean = agent.name.replace(/\s+/g, '_');
-
-    const fileName = `${agentNameClean}_${dateFromFormatted}_${dateToFormatted}.csv`;
+    const dateStr = new Date().toISOString().split('T')[0];
+    const fileName = `${agentNameClean}_selected_tickets_${dateStr}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
     res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition');
