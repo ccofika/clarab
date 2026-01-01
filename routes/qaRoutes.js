@@ -6,6 +6,7 @@ const {
   // Agent controllers
   getAllAgents,
   getAgent,
+  getAgentIssues,
   createAgent,
   updateAgent,
   deleteAgent,
@@ -31,6 +32,7 @@ const {
   aiSemanticSearch,
   generateTicketEmbeddingEndpoint,
   generateAllTicketEmbeddings,
+  getSimilarFeedbacks,
   // All Agents Admin controllers
   getAllAgentsAdmin,
   updateAgentAdmin,
@@ -112,6 +114,9 @@ router.route('/agents/:id')
   .put(validate('updateAgent'), updateAgent)
   .delete(deleteAgent);
 
+// Get agent's unresolved issues
+router.get('/agents/:id/issues', getAgentIssues);
+
 // ============================================
 // TICKET ROUTES
 // ============================================
@@ -154,6 +159,7 @@ router.get('/ai/analyze-agent/:agentId', getAgentAnalysis);
 router.get('/ai-search', aiSemanticSearch);
 router.post('/tickets/:id/generate-embedding', generateTicketEmbeddingEndpoint);
 router.post('/generate-all-embeddings', generateAllTicketEmbeddings);
+router.post('/tickets/similar-feedbacks', getSimilarFeedbacks);
 
 // ============================================
 // ANALYTICS ROUTES

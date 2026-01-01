@@ -4,7 +4,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-const AI_MODEL = 'gpt-5-nano-2025-08-07'; // AI model for chat completions
+const AI_MODEL = 'gpt-4o-mini'; // AI model for chat completions (fast & cost-effective)
 const EMBEDDING_MODEL = 'text-embedding-3-small'; // Upgraded from ada-002: 5x cheaper, better performance
 
 /**
@@ -501,6 +501,46 @@ Current context:
   }
 };
 
+/**
+ * Generate a one-sentence summary of a ticket issue for agent tracking
+ * @param {Object} ticket - Ticket data with notes, feedback, category
+ * @returns {Promise<string>} - One-sentence summary
+ */
+const summarizeTicketIssue = async (ticket) => {
+  try {
+    const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    const notes = stripHtml(ticket.notes) || 'No notes';
+    const feedback = stripHtml(ticket.feedback) || 'No feedback';
+    const category = ticket.category || 'Unknown';
+
+    const prompt = `Based on the following QA ticket review, write ONE SHORT sentence (max 15 words) summarizing what the agent did wrong. Be specific and actionable.
+
+Category: ${category}
+Notes: ${notes}
+Feedback: ${feedback}
+
+Write ONLY the summary sentence, nothing else. Example format: "Failed to verify customer identity before processing refund request."`;
+
+    const response = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      max_completion_tokens: 100
+    });
+
+    const summary = response.choices[0].message.content?.trim();
+    return summary || 'Issue details unavailable';
+  } catch (error) {
+    console.error('Error summarizing ticket issue:', error);
+    return 'Issue details unavailable';
+  }
+};
+
 module.exports = {
   generateEmbedding,
   generateElementEmbedding,
@@ -508,5 +548,6 @@ module.exports = {
   cosineSimilarity,
   parseNaturalLanguageQuery,
   aiSearchAssistant,
-  qaAssistant
+  qaAssistant,
+  summarizeTicketIssue
 };

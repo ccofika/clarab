@@ -32,6 +32,35 @@ const agentSchema = new mongoose.Schema({
   isRemoved: {
     type: Boolean,
     default: false
+  },
+  // Unresolved issues from recent bad grades (updated weekly by AI analysis)
+  unresolvedIssues: [{
+    ticketId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ticket'
+    },
+    ticketNumber: String,         // e.g., "INC123456"
+    category: String,             // Ticket category
+    qualityScore: Number,         // The bad score (< 90%)
+    gradedDate: Date,             // When it was graded
+    summary: String,              // AI-generated one-sentence summary of the issue
+    feedback: String,             // Original feedback given
+    isResolved: {                 // Set to true if agent got good score for similar ticket
+      type: Boolean,
+      default: false
+    },
+    resolvedByTicketId: {         // Reference to ticket that shows improvement
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Ticket'
+    },
+    createdAt: {
+      type: Date,
+      default: Date.now
+    }
+  }],
+  // Last time the issues were analyzed
+  issuesLastAnalyzed: {
+    type: Date
   }
 }, {
   timestamps: true

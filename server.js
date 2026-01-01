@@ -15,12 +15,29 @@ const connectDB = require('./config/db');
 const seedAnnouncementsWorkspace = require('./utils/seedAnnouncements');
 const seedActiveIssuesWorkspace = require('./utils/seedActiveIssues');
 const User = require('./models/User');
+const cron = require('node-cron');
+const { analyzeAllAgents } = require('./scripts/analyzeAgentIssues');
 
 // Connect to database
 connectDB().then(() => {
   // Seed public workspaces after DB connection
   seedAnnouncementsWorkspace();
   seedActiveIssuesWorkspace();
+
+  // Schedule weekly agent issues analysis - Every Monday at 6:00 AM
+  cron.schedule('0 6 * * 1', async () => {
+    console.log('🕐 Running scheduled agent issues analysis (Monday 6:00 AM)...');
+    try {
+      await analyzeAllAgents();
+      console.log('✅ Scheduled agent issues analysis completed');
+    } catch (error) {
+      console.error('❌ Scheduled agent issues analysis failed:', error);
+    }
+  }, {
+    timezone: 'Europe/Belgrade' // Serbian timezone
+  });
+
+  console.log('📅 Cron job scheduled: Agent issues analysis every Monday at 6:00 AM (Europe/Belgrade)');
 });
 
 const app = express();

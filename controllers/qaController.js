@@ -94,6 +94,35 @@ exports.getAgent = async (req, res) => {
   }
 };
 
+// @desc    Get agent's unresolved issues (bad grades not yet improved)
+// @route   GET /api/qa/agents/:id/issues
+// @access  Private
+exports.getAgentIssues = async (req, res) => {
+  try {
+    const agent = await Agent.findById(req.params.id)
+      .select('name unresolvedIssues issuesLastAnalyzed');
+
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Filter to only unresolved issues
+    const unresolvedIssues = (agent.unresolvedIssues || [])
+      .filter(issue => !issue.isResolved)
+      .sort((a, b) => new Date(b.gradedDate) - new Date(a.gradedDate));
+
+    res.json({
+      agentName: agent.name,
+      issuesLastAnalyzed: agent.issuesLastAnalyzed,
+      unresolvedCount: unresolvedIssues.length,
+      issues: unresolvedIssues
+    });
+  } catch (error) {
+    logger.error('Error fetching agent issues:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // @desc    Create new agent (globally unique)
 // @route   POST /api/qa/agents
 // @access  Private
@@ -482,16 +511,17 @@ exports.createTicket = async (req, res) => {
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email');
 
-    // Generate AI embedding in background (don't await to avoid blocking response)
-    const ticketId = ticket._id;
+    // Generate AI embeddings in background (don't await to avoid blocking response)
+    const ticketIdForEmbed = ticket._id;
+    const ticketNotes = populatedTicket.notes;
+
+    // Generate full embedding (notes + feedback)
     generateTicketEmbedding(populatedTicket)
       .then(async (embedding) => {
         if (embedding) {
-          // Re-fetch ticket to check if it still exists and avoid version conflicts
-          const existingTicket = await Ticket.findById(ticketId);
+          const existingTicket = await Ticket.findById(ticketIdForEmbed);
           if (existingTicket) {
-            // Use findByIdAndUpdate to avoid version conflicts
-            await Ticket.findByIdAndUpdate(ticketId, {
+            await Ticket.findByIdAndUpdate(ticketIdForEmbed, {
               embedding: embedding,
               embeddingOutdated: false
             });
@@ -499,11 +529,22 @@ exports.createTicket = async (req, res) => {
         }
       })
       .catch(err => {
-        // Only log if it's not a version error from a deleted document
         if (err.name !== 'VersionError') {
           console.error('Error generating ticket embedding:', err);
         }
       });
+
+    // Generate notes-only embedding for similar feedback search
+    if (ticketNotes && ticketNotes.trim().length >= 10) {
+      const cleanNotes = ticketNotes.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      generateEmbedding(cleanNotes)
+        .then(async (notesEmbedding) => {
+          if (notesEmbedding) {
+            await Ticket.findByIdAndUpdate(ticketIdForEmbed, { notesEmbedding });
+          }
+        })
+        .catch(err => console.error('Error generating notes embedding:', err));
+    }
 
     logger.info(`Ticket created: ${ticket.ticketId} by user ${req.user.email}`);
     res.status(201).json(populatedTicket);
@@ -557,13 +598,15 @@ exports.updateTicket = async (req, res) => {
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');
 
-    // Regenerate embedding in background whenever ticket is updated
-    // This ensures AI search always has up-to-date embeddings
-    const ticketId = ticket._id;
+    // Regenerate embeddings in background whenever ticket is updated
+    const ticketIdForEmbed = ticket._id;
+    const ticketNotes = ticket.notes;
+
+    // Generate full embedding (notes + feedback)
     generateTicketEmbedding(ticket)
       .then(async (embedding) => {
         if (embedding) {
-          await Ticket.findByIdAndUpdate(ticketId, {
+          await Ticket.findByIdAndUpdate(ticketIdForEmbed, {
             embedding: embedding,
             embeddingOutdated: false
           });
@@ -575,6 +618,18 @@ exports.updateTicket = async (req, res) => {
           logger.error(`Error regenerating embedding for ticket ${ticket.ticketId}:`, err);
         }
       });
+
+    // Regenerate notes-only embedding for similar feedback search
+    if (ticketNotes && ticketNotes.trim().length >= 10) {
+      const cleanNotes = ticketNotes.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+      generateEmbedding(cleanNotes)
+        .then(async (notesEmbedding) => {
+          if (notesEmbedding) {
+            await Ticket.findByIdAndUpdate(ticketIdForEmbed, { notesEmbedding });
+          }
+        })
+        .catch(err => logger.error(`Error generating notes embedding for ticket ${ticket.ticketId}:`, err));
+    }
 
     logger.info(`Ticket updated: ${ticket.ticketId} by user ${req.user.email}`);
     res.json(ticket);
@@ -1394,6 +1449,200 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error generating embeddings:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get similar feedbacks from graded tickets based on notes
+// @route   POST /api/qa/tickets/similar-feedbacks
+// @access  Private
+//
+// HYBRID APPROACH:
+// 1. Keyword matching - Find tickets where notes contain similar keywords (fast, no API calls)
+// 2. Notes-to-notes embedding - Generate embeddings on-the-fly for notes comparison (accurate)
+// Returns up to 10 results combining both methods
+exports.getSimilarFeedbacks = async (req, res) => {
+  try {
+    const { notes, excludeTicketId, limit = 10 } = req.body;
+
+    // Validate notes - need meaningful content
+    if (!notes || notes.trim().length < 10) {
+      return res.json({ results: [] });
+    }
+
+    // Strip HTML tags from notes
+    const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    const cleanNotes = stripHtml(notes);
+
+    // Build base filter for graded tickets with feedback
+    const baseFilter = {
+      status: 'Graded',
+      feedback: { $exists: true, $ne: null, $ne: '' },
+      notes: { $exists: true, $ne: null, $ne: '' }
+    };
+
+    // Exclude current ticket if provided
+    if (excludeTicketId) {
+      try {
+        baseFilter._id = { $ne: new require('mongoose').Types.ObjectId(excludeTicketId) };
+      } catch (e) {
+        // Invalid ObjectId, ignore
+      }
+    }
+
+    // ========================================
+    // STEP 1: KEYWORD MATCHING (Fast)
+    // ========================================
+
+    // Extract meaningful keywords (3+ chars, no common stopwords)
+    const stopwords = new Set(['the', 'and', 'for', 'that', 'this', 'with', 'from', 'have', 'was', 'were', 'are', 'been', 'being', 'has', 'had', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'also', 'just', 'only', 'even', 'more', 'most', 'other', 'some', 'such', 'than', 'too', 'very', 'own', 'same', 'into', 'over', 'after', 'before', 'between', 'under', 'again', 'further', 'then', 'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'each', 'few', 'many', 'much', 'both', 'any', 'these', 'those', 'what', 'which', 'who', 'whom', 'but', 'not', 'out', 'about', 'because', 'while', 'during', 'through', 'lepo', 'dobro', 'smo', 'mogli', 'nakon', 'koji', 'koja', 'koje', 'tako', 'sto', 'ali', 'vec', 'jos', 'biti', 'bio', 'bila', 'bilo', 'bice']);
+
+    const keywords = cleanNotes
+      .toLowerCase()
+      .replace(/[^\w\sčćžšđ]/gi, ' ')  // Keep Serbian chars
+      .split(/\s+/)
+      .filter(w => w.length >= 3 && !stopwords.has(w))
+      .slice(0, 15);  // Limit to 15 keywords
+
+    logger.info(`Similar feedbacks: extracted keywords: ${keywords.join(', ')}`);
+
+    let keywordResults = [];
+
+    if (keywords.length > 0) {
+      // Build regex pattern for keyword matching in notes
+      const keywordPatterns = keywords.map(k => new RegExp(k, 'i'));
+
+      // Find tickets where notes match any keyword
+      const keywordCandidates = await Ticket.find({
+        ...baseFilter,
+        $or: keywordPatterns.map(pattern => ({ notes: pattern }))
+      })
+        .select('ticketId notes feedback qualityScorePercent category dateEntered agent')
+        .populate('agent', 'name')
+        .limit(100)
+        .lean();
+
+      // Score by number of keyword matches
+      keywordResults = keywordCandidates.map(ticket => {
+        const ticketNotesLower = stripHtml(ticket.notes).toLowerCase();
+        let matchCount = 0;
+        const matchedKeywords = [];
+
+        keywords.forEach(keyword => {
+          if (ticketNotesLower.includes(keyword)) {
+            matchCount++;
+            matchedKeywords.push(keyword);
+          }
+        });
+
+        // Calculate match percentage
+        const matchScore = keywords.length > 0 ? Math.round((matchCount / keywords.length) * 100) : 0;
+
+        return {
+          _id: ticket._id,
+          ticketId: ticket.ticketId,
+          notes: ticket.notes,
+          feedback: ticket.feedback,
+          qualityScorePercent: ticket.qualityScorePercent,
+          category: ticket.category,
+          dateEntered: ticket.dateEntered,
+          agentName: ticket.agent?.name,
+          similarityScore: matchScore,
+          matchType: 'keyword',
+          matchedKeywords
+        };
+      })
+        .filter(t => t.similarityScore >= 20)  // At least 20% keyword match
+        .sort((a, b) => b.similarityScore - a.similarityScore)
+        .slice(0, 5);  // Top 5 keyword matches
+
+      logger.info(`Similar feedbacks: found ${keywordResults.length} keyword matches`);
+    }
+
+    // ========================================
+    // STEP 2: NOTES-TO-NOTES EMBEDDING (Using stored notesEmbedding)
+    // ========================================
+    // Uses pre-computed notesEmbedding field for fast, accurate similarity search
+
+    let embeddingResults = [];
+
+    // Generate embedding for input notes
+    const queryEmbedding = await generateEmbedding(cleanNotes);
+
+    if (queryEmbedding) {
+      // Get IDs from keyword results to exclude duplicates
+      const keywordTicketIds = new Set(keywordResults.map(r => r.ticketId));
+
+      // Find tickets with stored notesEmbedding, excluding keyword matches
+      const embeddingCandidates = await Ticket.find({
+        ...baseFilter,
+        ticketId: { $nin: Array.from(keywordTicketIds) },  // Exclude keyword matches
+        notesEmbedding: { $exists: true, $type: 'array', $not: { $size: 0 } }
+      })
+        .select('+notesEmbedding ticketId notes feedback qualityScorePercent category dateEntered agent')
+        .populate('agent', 'name')
+        .limit(200)  // Can handle more since we're using stored embeddings
+        .lean();
+
+      // Calculate similarity using stored notesEmbedding
+      embeddingResults = embeddingCandidates
+        .map(ticket => {
+          if (!ticket.notesEmbedding || ticket.notesEmbedding.length === 0) return null;
+
+          // Calculate notes-to-notes similarity using stored embedding
+          const similarity = cosineSimilarity(queryEmbedding, ticket.notesEmbedding) * 100;
+
+          return {
+            _id: ticket._id,
+            ticketId: ticket.ticketId,
+            notes: ticket.notes,
+            feedback: ticket.feedback,
+            qualityScorePercent: ticket.qualityScorePercent,
+            category: ticket.category,
+            dateEntered: ticket.dateEntered,
+            agentName: ticket.agent?.name,
+            similarityScore: Math.round(similarity),
+            matchType: 'embedding'
+          };
+        })
+        .filter(r => r !== null && r.similarityScore >= 25)  // At least 25% similarity
+        .sort((a, b) => b.similarityScore - a.similarityScore)
+        .slice(0, 5);  // Top 5 embedding matches
+
+      logger.info(`Similar feedbacks: found ${embeddingResults.length} embedding matches (using stored notesEmbedding)`);
+    }
+
+    // ========================================
+    // STEP 3: COMBINE AND DEDUPLICATE RESULTS
+    // ========================================
+
+    // Combine results, prioritizing higher scores
+    const allResults = [...keywordResults, ...embeddingResults];
+
+    // Deduplicate by ticket ID, keeping the one with higher score
+    const seen = new Map();
+    allResults.forEach(r => {
+      const key = r.ticketId;
+      if (!seen.has(key) || seen.get(key).similarityScore < r.similarityScore) {
+        seen.set(key, r);
+      }
+    });
+
+    // Sort by similarity score and take top results
+    const finalResults = Array.from(seen.values())
+      .sort((a, b) => b.similarityScore - a.similarityScore)
+      .slice(0, parseInt(limit));
+
+    logger.info(`Similar feedbacks: returning ${finalResults.length} combined results`);
+
+    res.json({ results: finalResults });
+
+  } catch (error) {
+    logger.error('Error getting similar feedbacks:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

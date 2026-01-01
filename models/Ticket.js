@@ -59,8 +59,13 @@ const ticketSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
-  // AI Embedding for semantic search
+  // AI Embedding for semantic search (notes + feedback combined)
   embedding: {
+    type: [Number],
+    select: false
+  },
+  // Notes-only embedding for similar feedback search (asymmetric search optimization)
+  notesEmbedding: {
     type: [Number],
     select: false
   },
