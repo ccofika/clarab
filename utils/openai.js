@@ -541,6 +541,95 @@ Write ONLY the summary sentence, nothing else. Example format: "Failed to verify
   }
 };
 
+/**
+ * Generate summary for a single agent's graded tickets
+ * @param {string} agentName - Name of the agent
+ * @param {Array} tickets - Array of tickets with ticketId, notes, feedback, score, category
+ * @returns {Promise<string>} - Summary text for this agent
+ */
+const generateAgentSummary = async (agentName, tickets) => {
+  try {
+    const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    // Prepare ticket data - truncate long notes/feedback to save tokens
+    const ticketData = tickets.map(t => ({
+      ticketId: t.ticketId,
+      notes: stripHtml(t.notes).substring(0, 500),
+      feedback: stripHtml(t.feedback).substring(0, 500),
+      score: t.score,
+      category: t.category
+    }));
+
+    console.log(`[generateAgentSummary] Preparing summary for ${agentName}, ${ticketData.length} tickets`);
+
+    // Check if all tickets are 100%
+    const allPerfect = ticketData.every(t => t.score === 100);
+
+    const systemPrompt = `Ti si QA summary asistent. Pišeš KRATKE sažetke grešaka agenata na SRPSKOM jeziku u TREĆEM LICU.
+
+PRAVILA:
+- Piši u TREĆEM LICU (npr. "Savetovao je...", "Nije proverio...", "Pogrešio je...")
+- Ako su svi tiketi 100%: Napiši samo "Sve lepo odradjeno, ne pravi nikakve greske."
+- Ako ima grešaka: Opiši UKRATKO šta je agent pogrešio - NE objašnjavaj šta je trebalo da uradi
+- NIKADA ne piši ID tiketa
+- NIKADA ne piši procente
+- NIKADA ne pravi listu - piši u jednom ili dva paragrafa
+- Budi KRATAK i KONKRETAN
+- Možeš koristiti emotikone :D ili :/ gde je prikladno
+- Ako ima više grešaka, spoji ih prirodno u tekst
+- Na kraju možeš dodati "Ostalo je okej." ili "Sve u svemu dobro radi." ako ima i dobrih stvari
+
+PRIMERI DOBROG STILA:
+"Savetovao korisnika da prvo povuce crypto na external wallet umesto direktno na drugi stake account, za cime nije bilo razloga. Ostalo je okej."
+
+"Postavio W role za OntarioBlocked issue umesto da posalje troubleshooting steps :/ Takodje nije najbolje objasnio moonpay/swapped opcije. Sve u svemu ima znanja ali se ponekad zbuni."
+
+"Rekla korisniku da deposit ceka umesto da proveri zasto amount nije tacan na ACP-u :D Mala greskica sa ARS conversion za affiliate. Ostalo okej."
+
+"Sve lepo odradjeno, ne pravi nikakve greske."
+
+Odgovori SAMO sa kratkim opisom, bez headera, bez liste.`;
+
+    const userPrompt = `Agent: ${agentName}
+Broj tiketa: ${ticketData.length}
+
+Tiketi:
+${JSON.stringify(ticketData, null, 2)}
+
+Napiši kratak sažetak za ovog agenta. ${allPerfect ? 'Svi tiketi su 100%.' : 'Neki tiketi nisu 100%, opiši greške.'}`;
+
+    console.log(`[generateAgentSummary] Calling OpenAI for ${agentName}...`);
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-5-nano-2025-08-07',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_completion_tokens: 10000
+    });
+
+    console.log(`[generateAgentSummary] OpenAI response for ${agentName}:`, JSON.stringify(response.choices[0], null, 2));
+
+    const summary = response.choices[0].message.content?.trim();
+
+    if (!summary) {
+      console.warn(`[generateAgentSummary] Empty summary returned for ${agentName}`);
+    } else {
+      console.log(`[generateAgentSummary] Got summary for ${agentName}: ${summary.substring(0, 100)}...`);
+    }
+
+    return summary || null;
+  } catch (error) {
+    console.error(`[generateAgentSummary] ERROR for ${agentName}:`, error.message);
+    console.error(`[generateAgentSummary] Full error:`, error);
+    return null;
+  }
+};
+
 module.exports = {
   generateEmbedding,
   generateElementEmbedding,
@@ -549,5 +638,6 @@ module.exports = {
   parseNaturalLanguageQuery,
   aiSearchAssistant,
   qaAssistant,
-  summarizeTicketIssue
+  summarizeTicketIssue,
+  generateAgentSummary
 };

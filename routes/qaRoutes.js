@@ -57,6 +57,16 @@ const {
   deleteAISession
 } = require('../controllers/qaAnalyticsController');
 
+const {
+  // Summary controllers
+  generateSummary,
+  getAllSummaries,
+  getSummaryDates,
+  getSummary,
+  updateSummary,
+  deleteSummary
+} = require('../controllers/summaryController');
+
 // Authorization middleware - only allow specific emails
 const qaAuthorization = (req, res, next) => {
   const allowedEmails = [
@@ -180,6 +190,21 @@ router.route('/ai-sessions')
 router.route('/ai-sessions/:id')
   .get(getAISession)
   .delete(deleteAISession);
+
+// ============================================
+// SUMMARY ROUTES
+// ============================================
+
+router.route('/summaries')
+  .get(getAllSummaries)
+  .post(generateSummary);
+
+router.get('/summaries/dates', getSummaryDates);
+
+router.route('/summaries/:id')
+  .get(getSummary)
+  .put(updateSummary)
+  .delete(deleteSummary);
 
 // ============================================
 // ALL AGENTS ADMIN ROUTES (Admin only - Filip & Nevena)

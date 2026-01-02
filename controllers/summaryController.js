@@ -1,0 +1,467 @@
+const Summary = require('../models/Summary');
+const Ticket = require('../models/Ticket');
+const { generateAgentSummary } = require('../utils/openai');
+
+// Helper function to get start and end of a day (UTC)
+const getDayBoundaries = (date) => {
+  const d = new Date(date);
+  // Use UTC to avoid timezone issues
+  const startOfDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+  const endOfDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+
+  return { startOfDay, endOfDay };
+};
+
+// Helper function to get week boundaries (Monday to Sunday)
+const getWeekBoundaries = (date) => {
+  const monday = Summary.getMondayOfWeek(date);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  sunday.setHours(23, 59, 59, 999);
+
+  return { monday, sunday };
+};
+
+// Helper function to check if date is in range (UTC comparison)
+const isDateInRange = (date, start, end) => {
+  if (!date) return false;
+  const d = new Date(date);
+  return d >= start && d <= end;
+};
+
+// Helper function to calculate average score
+const calculateAverageScore = (tickets) => {
+  const gradedTickets = tickets.filter(t => t.qualityScorePercent !== null && t.qualityScorePercent !== undefined);
+  if (gradedTickets.length === 0) return null;
+
+  const sum = gradedTickets.reduce((acc, t) => acc + t.qualityScorePercent, 0);
+  return parseFloat((sum / gradedTickets.length).toFixed(2));
+};
+
+/**
+ * Generate a new summary for a specific date
+ * POST /api/qa/summaries
+ */
+const generateSummary = async (req, res) => {
+  try {
+    const { date } = req.body;
+    const userId = req.user._id;
+
+    if (!date) {
+      return res.status(400).json({ message: 'Date is required' });
+    }
+
+    const targetDate = new Date(date);
+
+    // Validate date is within current week
+    if (!Summary.isDateInCurrentWeek(targetDate)) {
+      return res.status(400).json({
+        message: 'Date must be within current week (Monday to today)'
+      });
+    }
+
+    const { startOfDay, endOfDay } = getDayBoundaries(targetDate);
+    const { monday, sunday } = getWeekBoundaries(targetDate);
+
+    // Fetch all tickets for this user on this day
+    const dayTickets = await Ticket.find({
+      createdBy: userId,
+      isArchived: false,
+      $or: [
+        { dateEntered: { $gte: startOfDay, $lte: endOfDay } },
+        { gradedDate: { $gte: startOfDay, $lte: endOfDay } }
+      ]
+    }).populate('agent', 'name');
+
+    if (dayTickets.length === 0) {
+      return res.status(400).json({
+        message: 'No ticket activity found for this day'
+      });
+    }
+
+    // Determine shift based on ticket activity times
+    const shift = Summary.determineShift(dayTickets);
+
+    // Check if summary already exists for this date and shift
+    const existingSummary = await Summary.findOne({
+      userId,
+      date: { $gte: startOfDay, $lte: endOfDay },
+      shift
+    });
+
+    if (existingSummary) {
+      return res.status(400).json({
+        message: `Summary already exists for this date and ${shift} shift. You can edit or delete it.`,
+        existingSummaryId: existingSummary._id
+      });
+    }
+
+    // Get all tickets for this week (for "ukupno" count)
+    const weekTickets = await Ticket.find({
+      createdBy: userId,
+      isArchived: false,
+      $or: [
+        { dateEntered: { $gte: monday, $lte: sunday } },
+        { gradedDate: { $gte: monday, $lte: sunday } }
+      ]
+    }).populate('agent', 'name');
+
+    // Group tickets by agent
+    const agentGroups = {};
+
+    dayTickets.forEach(ticket => {
+      const agentId = ticket.agent._id.toString();
+      const agentName = ticket.agent.name;
+
+      if (!agentGroups[agentId]) {
+        agentGroups[agentId] = {
+          agentId,
+          agentName,
+          selectedOnly: [],
+          gradedOnly: [],
+          selectedAndGraded: []
+        };
+      }
+
+      const selectedOnDay = isDateInRange(ticket.dateEntered, startOfDay, endOfDay);
+      const gradedOnDay = ticket.gradedDate && isDateInRange(ticket.gradedDate, startOfDay, endOfDay);
+
+      if (selectedOnDay && gradedOnDay) {
+        agentGroups[agentId].selectedAndGraded.push(ticket);
+      } else if (gradedOnDay) {
+        agentGroups[agentId].gradedOnly.push(ticket);
+      } else if (selectedOnDay && ticket.status === 'Selected') {
+        agentGroups[agentId].selectedOnly.push(ticket);
+      }
+    });
+
+    // Calculate weekly totals per agent
+    const weeklyTotalsPerAgent = {};
+    weekTickets.forEach(ticket => {
+      const agentId = ticket.agent._id.toString();
+      if (!weeklyTotalsPerAgent[agentId]) {
+        weeklyTotalsPerAgent[agentId] = 0;
+      }
+      weeklyTotalsPerAgent[agentId]++;
+    });
+
+    // STEP 1: Build structure for each agent
+    const agentSummaries = [];
+    const agentsSummarized = [];
+    let totalSelected = 0;
+    let totalGraded = 0;
+    let totalBoth = 0;
+
+    for (const [agentId, group] of Object.entries(agentGroups)) {
+      const weeklyTotal = weeklyTotalsPerAgent[agentId] || 0;
+
+      const selectedCount = group.selectedOnly.length;
+      const gradedCount = group.gradedOnly.length;
+      const bothCount = group.selectedAndGraded.length;
+
+      totalSelected += selectedCount;
+      totalGraded += gradedCount;
+      totalBoth += bothCount;
+
+      const allGradedTickets = [...group.gradedOnly, ...group.selectedAndGraded];
+      const avgScore = calculateAverageScore(allGradedTickets);
+
+      let headerLine = '';
+      let type = '';
+      let needsAISummary = false;
+
+      // Build header based on scenario
+      if (selectedCount > 0 && gradedCount === 0 && bothCount === 0) {
+        // Only selected - no AI needed
+        headerLine = `${group.agentName} - izdvojeno ${selectedCount} tiketa`;
+        type = 'selected';
+      } else if (gradedCount > 0 && selectedCount === 0 && bothCount === 0) {
+        // Only graded
+        headerLine = `${group.agentName} - ocenjeno ${gradedCount} ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+        type = 'graded';
+        needsAISummary = true;
+      } else if (bothCount > 0 && selectedCount === 0 && gradedCount === 0) {
+        // Only selected and graded (same tickets)
+        headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+        type = 'both';
+        needsAISummary = true;
+      } else {
+        // Mixed scenario
+        if (selectedCount > 0) {
+          agentSummaries.push({
+            header: `${group.agentName} - izdvojeno ${selectedCount} tiketa`,
+            description: null,
+            tickets: []
+          });
+        }
+        if (gradedCount > 0 || bothCount > 0) {
+          if (bothCount > 0 && gradedCount === 0) {
+            headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+          } else if (bothCount > 0 && gradedCount > 0) {
+            headerLine = `${group.agentName} - izdvojen ${bothCount} i ocenjeno ${gradedCount} tiketa ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+          } else {
+            headerLine = `${group.agentName} - ocenjeno ${gradedCount} ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+          }
+          type = bothCount > 0 ? 'both' : 'graded';
+          needsAISummary = true;
+        }
+      }
+
+      if (headerLine) {
+        agentSummaries.push({
+          header: headerLine,
+          description: null,
+          tickets: needsAISummary ? allGradedTickets : [],
+          agentName: group.agentName
+        });
+      }
+
+      // Track agent summary metadata
+      if (selectedCount > 0 || gradedCount > 0 || bothCount > 0) {
+        agentsSummarized.push({
+          agentId: group.agentId,
+          agentName: group.agentName,
+          type: type || 'selected',
+          count: selectedCount + gradedCount + bothCount,
+          weeklyTotal,
+          averageScore: avgScore
+        });
+      }
+    }
+
+    // STEP 2: Call AI for each agent that needs a summary
+    console.log(`Generating AI summaries for ${agentSummaries.filter(a => a.tickets.length > 0).length} agents...`);
+
+    for (const agentSummary of agentSummaries) {
+      if (agentSummary.tickets.length > 0) {
+        try {
+          // Prepare ticket data for AI
+          const ticketData = agentSummary.tickets.map(t => ({
+            ticketId: t.ticketId,
+            notes: t.notes || '',
+            feedback: t.feedback || '',
+            score: t.qualityScorePercent,
+            category: t.category || ''
+          }));
+
+          console.log(`Calling AI for ${agentSummary.agentName} with ${ticketData.length} tickets...`);
+
+          // Call AI for this specific agent
+          const aiDescription = await generateAgentSummary(agentSummary.agentName, ticketData);
+
+          if (aiDescription) {
+            agentSummary.description = aiDescription;
+            console.log(`Got AI summary for ${agentSummary.agentName}: ${aiDescription.substring(0, 50)}...`);
+          } else {
+            console.log(`No AI summary returned for ${agentSummary.agentName}`);
+          }
+        } catch (aiError) {
+          console.error(`AI error for ${agentSummary.agentName}:`, aiError.message);
+          // Continue without AI summary for this agent
+        }
+      }
+    }
+
+    // STEP 3: Combine everything into final content
+    let content = '';
+    for (const agentSummary of agentSummaries) {
+      content += agentSummary.header + '\n';
+      if (agentSummary.description) {
+        content += agentSummary.description + '\n';
+      }
+      content += '\n';
+    }
+
+    // Format title
+    const title = Summary.formatTitle(targetDate, shift);
+
+    // Create and save summary
+    const summary = await Summary.create({
+      userId,
+      date: startOfDay,
+      shift,
+      title,
+      content: content.trim(),
+      metadata: {
+        ticketCount: {
+          selected: totalSelected,
+          graded: totalGraded,
+          both: totalBoth
+        },
+        agentsSummarized,
+        generatedAt: new Date()
+      }
+    });
+
+    res.status(201).json(summary);
+  } catch (error) {
+    console.error('Generate summary error:', error);
+    res.status(500).json({ message: 'Failed to generate summary', error: error.message });
+  }
+};
+
+/**
+ * Get all summaries for the current user
+ * GET /api/qa/summaries
+ */
+const getAllSummaries = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { month, year, page = 1, limit = 20 } = req.query;
+
+    const query = { userId };
+
+    // Filter by month/year if provided
+    if (month && year) {
+      const startOfMonth = new Date(year, month - 1, 1);
+      const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+      query.date = { $gte: startOfMonth, $lte: endOfMonth };
+    }
+
+    const total = await Summary.countDocuments(query);
+    const summaries = await Summary.find(query)
+      .sort({ date: -1, shift: 1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    res.json({
+      summaries,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get summaries error:', error);
+    res.status(500).json({ message: 'Failed to fetch summaries', error: error.message });
+  }
+};
+
+/**
+ * Get dates that have summaries (for calendar highlighting)
+ * GET /api/qa/summaries/dates
+ */
+const getSummaryDates = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { month, year } = req.query;
+
+    if (!month || !year) {
+      return res.status(400).json({ message: 'Month and year are required' });
+    }
+
+    const startOfMonth = new Date(year, month - 1, 1);
+    const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+    const summaries = await Summary.find({
+      userId,
+      date: { $gte: startOfMonth, $lte: endOfMonth }
+    }).select('date shift');
+
+    // Group by date
+    const dateMap = {};
+    summaries.forEach(s => {
+      const dateKey = s.date.toISOString().split('T')[0];
+      if (!dateMap[dateKey]) {
+        dateMap[dateKey] = [];
+      }
+      dateMap[dateKey].push(s.shift);
+    });
+
+    const dates = Object.entries(dateMap).map(([date, shifts]) => ({
+      date,
+      shifts
+    }));
+
+    res.json({ dates });
+  } catch (error) {
+    console.error('Get summary dates error:', error);
+    res.status(500).json({ message: 'Failed to fetch summary dates', error: error.message });
+  }
+};
+
+/**
+ * Get a single summary by ID
+ * GET /api/qa/summaries/:id
+ */
+const getSummary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const summary = await Summary.findOne({ _id: id, userId });
+
+    if (!summary) {
+      return res.status(404).json({ message: 'Summary not found' });
+    }
+
+    res.json(summary);
+  } catch (error) {
+    console.error('Get summary error:', error);
+    res.status(500).json({ message: 'Failed to fetch summary', error: error.message });
+  }
+};
+
+/**
+ * Update a summary's content
+ * PUT /api/qa/summaries/:id
+ */
+const updateSummary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { content } = req.body;
+    const userId = req.user._id;
+
+    if (!content) {
+      return res.status(400).json({ message: 'Content is required' });
+    }
+
+    const summary = await Summary.findOneAndUpdate(
+      { _id: id, userId },
+      { content },
+      { new: true }
+    );
+
+    if (!summary) {
+      return res.status(404).json({ message: 'Summary not found' });
+    }
+
+    res.json(summary);
+  } catch (error) {
+    console.error('Update summary error:', error);
+    res.status(500).json({ message: 'Failed to update summary', error: error.message });
+  }
+};
+
+/**
+ * Delete a summary
+ * DELETE /api/qa/summaries/:id
+ */
+const deleteSummary = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const summary = await Summary.findOneAndDelete({ _id: id, userId });
+
+    if (!summary) {
+      return res.status(404).json({ message: 'Summary not found' });
+    }
+
+    res.json({ message: 'Summary deleted successfully' });
+  } catch (error) {
+    console.error('Delete summary error:', error);
+    res.status(500).json({ message: 'Failed to delete summary', error: error.message });
+  }
+};
+
+module.exports = {
+  generateSummary,
+  getAllSummaries,
+  getSummaryDates,
+  getSummary,
+  updateSummary,
+  deleteSummary
+};
