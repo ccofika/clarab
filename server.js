@@ -182,6 +182,7 @@ const developerRoutes = require('./routes/developerRoutes');
 const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
 const slackRoutes = require('./routes/slackRoutes');
 const qaRoutes = require('./routes/qaRoutes');
+const reportRoutes = require('./routes/reportRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
@@ -205,6 +206,7 @@ app.use('/api/developer', developerRoutes); // Developer-only endpoints
 app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
 app.use('/api/slack', slackRoutes); // Slack integration
 app.use('/api/qa', qaRoutes); // QA Manager endpoints
+app.use('/api/reports', reportRoutes); // Statistics/Reports system
 app.use('/api/chat', chatRoutes); // Chat endpoints
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization

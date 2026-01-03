@@ -67,6 +67,22 @@ const {
   deleteSummary
 } = require('../controllers/summaryController');
 
+const {
+  // Statistics controllers
+  getStatisticCards,
+  getStatisticCardsForUser,
+  getStatisticCard,
+  createStatisticCard,
+  createFromTemplate,
+  updateStatisticCard,
+  updateCardLayouts,
+  deleteStatisticCard,
+  fetchCardData,
+  getTemplates,
+  getMetadata,
+  getStatisticsUsers
+} = require('../controllers/statisticsController');
+
 // Authorization middleware - only allow specific emails
 const qaAuthorization = (req, res, next) => {
   const allowedEmails = [
@@ -95,6 +111,22 @@ const allAgentsAdminAuth = (req, res, next) => {
   if (!adminEmails.includes(req.user.email)) {
     return res.status(403).json({
       message: 'Access denied. Only admins can manage all agents.'
+    });
+  }
+
+  next();
+};
+
+// Statistics authorization - only Filip and Nevena
+const statisticsAuth = (req, res, next) => {
+  const allowedEmails = [
+    'filipkozomara@mebit.io',
+    'nevena@mebit.io'
+  ];
+
+  if (!allowedEmails.includes(req.user.email)) {
+    return res.status(403).json({
+      message: 'Access denied. Statistics is only available for authorized users.'
     });
   }
 
@@ -214,5 +246,40 @@ router.get('/all-agents', allAgentsAdminAuth, getAllAgentsAdmin);
 router.put('/all-agents/:id', allAgentsAdminAuth, updateAgentAdmin);
 router.delete('/all-agents/:id', allAgentsAdminAuth, deleteAgentAdmin);
 router.post('/all-agents/merge', allAgentsAdminAuth, mergeAgents);
+
+// ============================================
+// STATISTICS ROUTES (Filip & Nevena only)
+// ============================================
+
+// Get metadata (available metrics, operators, etc.)
+router.get('/statistics/metadata', statisticsAuth, getMetadata);
+
+// Get available templates
+router.get('/statistics/templates', statisticsAuth, getTemplates);
+
+// Get statistics users (for switching views)
+router.get('/statistics/users', statisticsAuth, getStatisticsUsers);
+
+// Create from template
+router.post('/statistics/from-template', statisticsAuth, createFromTemplate);
+
+// Update multiple card layouts (for drag/resize)
+router.put('/statistics/layouts', statisticsAuth, updateCardLayouts);
+
+// Fetch data for preview or existing card
+router.post('/statistics/cards/:id/data', statisticsAuth, fetchCardData);
+
+// Get cards for another user (view mode)
+router.get('/statistics/user/:userId', statisticsAuth, getStatisticCardsForUser);
+
+// CRUD for statistic cards
+router.route('/statistics/cards')
+  .get(statisticsAuth, getStatisticCards)
+  .post(statisticsAuth, createStatisticCard);
+
+router.route('/statistics/cards/:id')
+  .get(statisticsAuth, getStatisticCard)
+  .put(statisticsAuth, updateStatisticCard)
+  .delete(statisticsAuth, deleteStatisticCard);
 
 module.exports = router;

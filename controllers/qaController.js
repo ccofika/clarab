@@ -345,7 +345,7 @@ exports.getAllTickets = async (req, res) => {
       scoreMin,
       scoreMax,
       search,
-      category,
+      categories,
       priority,
       tags,
       weekNumber,
@@ -409,8 +409,11 @@ exports.getAllTickets = async (req, res) => {
     }
 
     // New filters
-    if (category) {
-      filter.category = { $in: category.split(',') };
+    if (categories) {
+      // Support filtering by any of the provided categories
+      // Handle both array (from URLSearchParams) and comma-separated string
+      const categoryList = Array.isArray(categories) ? categories : categories.split(',');
+      filter.categories = { $in: categoryList };
     }
 
     if (priority) {
@@ -562,6 +565,9 @@ exports.createTicket = async (req, res) => {
 // @access  Private
 exports.updateTicket = async (req, res) => {
   try {
+    // Debug: Log what categories are being sent
+    logger.info(`Update ticket - received categories: ${JSON.stringify(req.body.categories)}`);
+
     // If agent is being updated, check if it exists and is in user's active grading list
     if (req.body.agent) {
       const agent = await Agent.findOne({
@@ -590,10 +596,13 @@ exports.updateTicket = async (req, res) => {
       req.body.gradedDate = null;
     }
 
+    // Log what we're trying to save
+    logger.info(`Update ticket - full req.body: ${JSON.stringify(req.body)}`);
+
     const ticket = await Ticket.findByIdAndUpdate(
       req.params.id,
-      req.body,
-      { new: true, runValidators: true }
+      { $set: req.body },
+      { new: true }
     )
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');
@@ -632,6 +641,7 @@ exports.updateTicket = async (req, res) => {
     }
 
     logger.info(`Ticket updated: ${ticket.ticketId} by user ${req.user.email}`);
+    logger.info(`Ticket saved categories: ${JSON.stringify(ticket.categories)}`);
     res.json(ticket);
   } catch (error) {
     if (error.code === 11000) {
@@ -1034,7 +1044,7 @@ exports.aiSemanticSearch = async (req, res) => {
       isArchived,
       agent,
       status,
-      category,
+      categories,
       priority,
       dateFrom,
       dateTo,
@@ -1074,7 +1084,10 @@ exports.aiSemanticSearch = async (req, res) => {
     // Additional filters (only simple equality/in supported by $vectorSearch filter)
     if (agent) vectorFilter.agent = new require('mongoose').Types.ObjectId(agent);
     if (status) vectorFilter.status = { $in: status.split(',') };
-    if (category) vectorFilter.category = { $in: category.split(',') };
+    if (categories) {
+      const categoryList = Array.isArray(categories) ? categories : categories.split(',');
+      vectorFilter.categories = { $in: categoryList };
+    }
     if (priority) vectorFilter.priority = { $in: priority.split(',') };
 
     // Try MongoDB Atlas $vectorSearch first (server-side, memory efficient)
@@ -1105,7 +1118,7 @@ exports.aiSemanticSearch = async (req, res) => {
             status: 1,
             dateEntered: 1,
             qualityScorePercent: 1,
-            category: 1,
+            categories: 1,
             priority: 1,
             tags: 1,
             agent: 1,
@@ -1150,7 +1163,7 @@ exports.aiSemanticSearch = async (req, res) => {
             status: 1,
             dateEntered: 1,
             qualityScorePercent: 1,
-            category: 1,
+            categories: 1,
             priority: 1,
             tags: 1,
             isArchived: 1,
@@ -1211,7 +1224,10 @@ exports.aiSemanticSearch = async (req, res) => {
 
       if (agent) filter.agent = agent;
       if (status) filter.status = { $in: status.split(',') };
-      if (category) filter.category = { $in: category.split(',') };
+      if (categories) {
+        const categoryList = Array.isArray(categories) ? categories : categories.split(',');
+        filter.categories = { $in: categoryList };
+      }
       if (priority) filter.priority = { $in: priority.split(',') };
 
       if (dateFrom || dateTo) {
@@ -1228,7 +1244,7 @@ exports.aiSemanticSearch = async (req, res) => {
 
       // Use cursor to stream through ALL tickets without loading all into memory
       const cursor = Ticket.find(filter)
-        .select('+embedding ticketId shortDescription notes feedback status dateEntered qualityScorePercent category priority tags agent createdBy isArchived')
+        .select('+embedding ticketId shortDescription notes feedback status dateEntered qualityScorePercent categories priority tags agent createdBy isArchived')
         .populate('agent', 'name team position')
         .populate('createdBy', 'name email')
         .cursor();
@@ -1257,7 +1273,7 @@ exports.aiSemanticSearch = async (req, res) => {
             status: ticket.status,
             dateEntered: ticket.dateEntered,
             qualityScorePercent: ticket.qualityScorePercent,
-            category: ticket.category,
+            categories: ticket.categories,
             priority: ticket.priority,
             tags: ticket.tags,
             agent: ticket.agent,
@@ -1521,7 +1537,7 @@ exports.getSimilarFeedbacks = async (req, res) => {
         ...baseFilter,
         $or: keywordPatterns.map(pattern => ({ notes: pattern }))
       })
-        .select('ticketId notes feedback qualityScorePercent category dateEntered agent')
+        .select('ticketId notes feedback qualityScorePercent categories dateEntered agent')
         .populate('agent', 'name')
         .limit(100)
         .lean();
@@ -1548,7 +1564,7 @@ exports.getSimilarFeedbacks = async (req, res) => {
           notes: ticket.notes,
           feedback: ticket.feedback,
           qualityScorePercent: ticket.qualityScorePercent,
-          category: ticket.category,
+          categories: ticket.categories,
           dateEntered: ticket.dateEntered,
           agentName: ticket.agent?.name,
           similarityScore: matchScore,
@@ -1583,7 +1599,7 @@ exports.getSimilarFeedbacks = async (req, res) => {
         ticketId: { $nin: Array.from(keywordTicketIds) },  // Exclude keyword matches
         notesEmbedding: { $exists: true, $type: 'array', $not: { $size: 0 } }
       })
-        .select('+notesEmbedding ticketId notes feedback qualityScorePercent category dateEntered agent')
+        .select('+notesEmbedding ticketId notes feedback qualityScorePercent categories dateEntered agent')
         .populate('agent', 'name')
         .limit(200)  // Can handle more since we're using stored embeddings
         .lean();
@@ -1602,7 +1618,7 @@ exports.getSimilarFeedbacks = async (req, res) => {
             notes: ticket.notes,
             feedback: ticket.feedback,
             qualityScorePercent: ticket.qualityScorePercent,
-            category: ticket.category,
+            categories: ticket.categories,
             dateEntered: ticket.dateEntered,
             agentName: ticket.agent?.name,
             similarityScore: Math.round(similarity),

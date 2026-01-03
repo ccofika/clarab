@@ -74,72 +74,11 @@ const ticketSchema = new mongoose.Schema({
     default: true
   },
   // Additional metadata for advanced filtering and search
-  category: {
+  // Categories - supports multiple categories per ticket
+  categories: [{
     type: String,
-    enum: [
-      'Account closure',
-      'ACP usage',
-      'Account recovery',
-      'Affiliate program',
-      'Available bonuses',
-      'Balance issues',
-      'Bet | Bet archive',
-      'Birthday bonus',
-      'Break in play',
-      'Bonus crediting',
-      'Bonus drops',
-      'Casino',
-      'Coin mixing | AML',
-      'Compliance (KYC, Terms of service, Privacy)',
-      'Crypto - General',
-      'Crypto deposits',
-      'Crypto withdrawals',
-      'Data deletion',
-      'Deposit bonus',
-      'Exclusion | General',
-      'Exclusion | Self exclusion',
-      'Exclusion | Casino exclusion',
-      'Fiat General',
-      'Fiat - CAD',
-      'Fiat - BRL',
-      'Fiat - JPY',
-      'Fiat - INR',
-      'Fiat - PEN/ARS/CLP',
-      'Forum',
-      'Funds recovery',
-      'Games issues',
-      'Games | Providers | Rules',
-      'Games | Live games',
-      'Hacked accounts',
-      'In-game chat | Third party chat',
-      'Monthly bonus',
-      'No luck tickets | RTP',
-      'Phishing | Scam attempt',
-      'Phone removal',
-      'Pre/Post monthly bonus',
-      'Promotions',
-      'Provably fair',
-      'Race',
-      'Rakeback',
-      'Reload',
-      'Responsible gambling',
-      'Roles',
-      'Rollover',
-      'Security (2FA, Password, Email codes)',
-      'Sportsbook',
-      'Stake basics',
-      'Stake chat',
-      'Stake original',
-      'Tech issues | Jira cases | Bugs',
-      'Tip recovery',
-      'VIP host',
-      'VIP program',
-      'Welcome bonus',
-      'Weekly bonus',
-      'Other'
-    ],
-    default: 'Other'
-  },
+    trim: true
+  }],
   priority: {
     type: String,
     enum: ['Low', 'Medium', 'High', 'Critical'],
@@ -171,7 +110,7 @@ ticketSchema.index({ agent: 1, status: 1 });
 ticketSchema.index({ agent: 1, isArchived: 1 });
 ticketSchema.index({ createdBy: 1, isArchived: 1 }); // For user-specific ticket queries
 ticketSchema.index({ createdBy: 1, agent: 1, isArchived: 1 }); // For user-agent-archived queries
-ticketSchema.index({ category: 1 });
+ticketSchema.index({ categories: 1 });
 ticketSchema.index({ priority: 1 });
 ticketSchema.index({ tags: 1 });
 ticketSchema.index({ weekNumber: 1, weekYear: 1 });

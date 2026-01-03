@@ -411,7 +411,7 @@ const qaAssistant = async (userMessage, conversationHistory = [], tickets = [], 
       agent: t.agent?.name || 'Unknown',
       dateEntered: t.dateEntered,
       status: t.status,
-      category: t.category,
+      categories: t.categories || [],
       priority: t.priority,
       qualityScore: t.qualityScorePercent,
       notes: t.notes,
@@ -427,7 +427,7 @@ You have access to ticket data with these fields:
 - agent: Agent name who handled the ticket
 - dateEntered: When ticket was created
 - status: Current status (Graded, Pending, etc.)
-- category: Ticket category
+- categories: Array of ticket categories (a ticket can have multiple categories)
 - priority: Ticket priority
 - qualityScore: Quality score percentage (0-100)
 - notes: Internal notes added to the ticket
@@ -451,7 +451,7 @@ IMPORTANT INSTRUCTIONS:
 - When user asks for analysis, provide detailed insights with specific numbers and examples
 - When user asks to paste/show something, output the EXACT text without summarizing
 - When user asks for "all tickets" for an agent, list ALL tickets including archived ones
-- When displaying ticket lists, show: ticketId, agent, status, date, quality score, and category
+- When displaying ticket lists, show: ticketId, agent, status, date, quality score, and categories
 - Be conversational but precise
 - If you don't have enough data, say so clearly
 
@@ -503,7 +503,7 @@ Current context:
 
 /**
  * Generate a one-sentence summary of a ticket issue for agent tracking
- * @param {Object} ticket - Ticket data with notes, feedback, category
+ * @param {Object} ticket - Ticket data with notes, feedback, categories
  * @returns {Promise<string>} - One-sentence summary
  */
 const summarizeTicketIssue = async (ticket) => {
@@ -515,11 +515,11 @@ const summarizeTicketIssue = async (ticket) => {
 
     const notes = stripHtml(ticket.notes) || 'No notes';
     const feedback = stripHtml(ticket.feedback) || 'No feedback';
-    const category = ticket.category || 'Unknown';
+    const categories = (ticket.categories || []).join(', ') || 'Unknown';
 
     const prompt = `Based on the following QA ticket review, write ONE SHORT sentence (max 15 words) summarizing what the agent did wrong. Be specific and actionable.
 
-Category: ${category}
+Categories: ${categories}
 Notes: ${notes}
 Feedback: ${feedback}
 
@@ -544,7 +544,7 @@ Write ONLY the summary sentence, nothing else. Example format: "Failed to verify
 /**
  * Generate summary for a single agent's graded tickets
  * @param {string} agentName - Name of the agent
- * @param {Array} tickets - Array of tickets with ticketId, notes, feedback, score, category
+ * @param {Array} tickets - Array of tickets with ticketId, notes, feedback, score, categories
  * @returns {Promise<string>} - Summary text for this agent
  */
 const generateAgentSummary = async (agentName, tickets) => {
@@ -560,7 +560,7 @@ const generateAgentSummary = async (agentName, tickets) => {
       notes: stripHtml(t.notes).substring(0, 500),
       feedback: stripHtml(t.feedback).substring(0, 500),
       score: t.score,
-      category: t.category
+      categories: t.categories || []
     }));
 
     console.log(`[generateAgentSummary] Preparing summary for ${agentName}, ${ticketData.length} tickets`);

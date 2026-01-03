@@ -255,28 +255,11 @@ const schemas = {
         'number.min': 'Quality score must be at least 0',
         'number.max': 'Quality score must not exceed 100'
       }),
-    category: Joi.string()
-      .valid(
-        'Account closure', 'ACP usage', 'Account recovery', 'Affiliate program',
-        'Available bonuses', 'Balance issues', 'Bet | Bet archive', 'Birthday bonus',
-        'Break in play', 'Bonus crediting', 'Bonus drops', 'Casino',
-        'Coin mixing | AML', 'Compliance (KYC, Terms of service, Privacy)',
-        'Crypto - General', 'Crypto deposits', 'Crypto withdrawals', 'Data deletion',
-        'Deposit bonus', 'Exclusion | General', 'Exclusion | Self exclusion',
-        'Exclusion | Casino exclusion', 'Fiat General', 'Fiat - CAD', 'Fiat - BRL',
-        'Fiat - JPY', 'Fiat - INR', 'Fiat - PEN/ARS/CLP', 'Forum', 'Funds recovery',
-        'Games issues', 'Games | Providers | Rules', 'Games | Live games',
-        'Hacked accounts', 'In-game chat | Third party chat', 'Monthly bonus',
-        'No luck tickets | RTP', 'Phishing | Scam attempt', 'Phone removal',
-        'Pre/Post monthly bonus', 'Promotions', 'Provably fair', 'Race', 'Rakeback',
-        'Reload', 'Responsible gambling', 'Roles', 'Rollover',
-        'Security (2FA, Password, Email codes)', 'Sportsbook', 'Stake basics',
-        'Stake chat', 'Stake original', 'Tech issues | Jira cases | Bugs',
-        'Tip recovery', 'VIP host', 'VIP program', 'Welcome bonus', 'Weekly bonus', 'Other'
-      )
+    categories: Joi.array()
+      .items(Joi.string().trim())
       .optional()
       .messages({
-        'any.only': 'Invalid category'
+        'array.base': 'Categories must be an array'
       })
   }),
 
@@ -328,28 +311,11 @@ const schemas = {
       .iso()
       .optional()
       .allow(null),
-    category: Joi.string()
-      .valid(
-        'Account closure', 'ACP usage', 'Account recovery', 'Affiliate program',
-        'Available bonuses', 'Balance issues', 'Bet | Bet archive', 'Birthday bonus',
-        'Break in play', 'Bonus crediting', 'Bonus drops', 'Casino',
-        'Coin mixing | AML', 'Compliance (KYC, Terms of service, Privacy)',
-        'Crypto - General', 'Crypto deposits', 'Crypto withdrawals', 'Data deletion',
-        'Deposit bonus', 'Exclusion | General', 'Exclusion | Self exclusion',
-        'Exclusion | Casino exclusion', 'Fiat General', 'Fiat - CAD', 'Fiat - BRL',
-        'Fiat - JPY', 'Fiat - INR', 'Fiat - PEN/ARS/CLP', 'Forum', 'Funds recovery',
-        'Games issues', 'Games | Providers | Rules', 'Games | Live games',
-        'Hacked accounts', 'In-game chat | Third party chat', 'Monthly bonus',
-        'No luck tickets | RTP', 'Phishing | Scam attempt', 'Phone removal',
-        'Pre/Post monthly bonus', 'Promotions', 'Provably fair', 'Race', 'Rakeback',
-        'Reload', 'Responsible gambling', 'Roles', 'Rollover',
-        'Security (2FA, Password, Email codes)', 'Sportsbook', 'Stake basics',
-        'Stake chat', 'Stake original', 'Tech issues | Jira cases | Bugs',
-        'Tip recovery', 'VIP host', 'VIP program', 'Welcome bonus', 'Weekly bonus', 'Other'
-      )
+    categories: Joi.array()
+      .items(Joi.string().trim())
       .optional()
       .messages({
-        'any.only': 'Invalid category'
+        'array.base': 'Categories must be an array'
       })
   })
 };
