@@ -68,6 +68,18 @@ const {
 } = require('../controllers/summaryController');
 
 const {
+  // Macro controllers
+  getAllMacros,
+  getMacro,
+  searchMacros,
+  createMacro,
+  updateMacro,
+  deleteMacro,
+  recordMacroUsage,
+  getMacroTickets
+} = require('../controllers/macroController');
+
+const {
   // Statistics controllers
   getStatisticCards,
   getStatisticCardsForUser,
@@ -237,6 +249,28 @@ router.route('/summaries/:id')
   .get(getSummary)
   .put(updateSummary)
   .delete(deleteSummary);
+
+// ============================================
+// MACRO ROUTES
+// ============================================
+
+// Search must be before :id route
+router.get('/macros/search', searchMacros);
+
+router.route('/macros')
+  .get(getAllMacros)
+  .post(createMacro);
+
+router.route('/macros/:id')
+  .get(getMacro)
+  .put(updateMacro)
+  .delete(deleteMacro);
+
+// Record macro usage for a ticket
+router.post('/macros/:id/use', recordMacroUsage);
+
+// Get tickets where macro was used (paginated)
+router.get('/macros/:id/tickets', getMacroTickets);
 
 // ============================================
 // ALL AGENTS ADMIN ROUTES (Admin only - Filip & Nevena)
