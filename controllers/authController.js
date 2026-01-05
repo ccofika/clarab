@@ -349,8 +349,10 @@ exports.googleCallback = async (req, res) => {
 
     // Redirect to frontend after successful Google login
     // Slack OAuth is now optional - user can connect later from settings
+    // SECURITY: Include token in URL for browsers that block third-party cookies (e.g., Brave)
+    // Token is short-lived (15 min) and is immediately stored in localStorage by frontend
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=${!!user.slackAccessToken}`;
+    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=${!!user.slackAccessToken}&token=${accessToken}`;
 
     res.redirect(redirectUrl);
   } catch (error) {
@@ -477,8 +479,9 @@ exports.slackCallback = async (req, res) => {
     res.cookie(COOKIE_NAMES.REFRESH_TOKEN, refreshToken, refreshTokenOptions);
 
     // Redirect to frontend with success
+    // SECURITY: Include token in URL for browsers that block third-party cookies (e.g., Brave)
     const frontendURL = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=true`;
+    const redirectUrl = `${frontendURL}/auth/callback?isFirstLogin=${user.isFirstLogin}&userId=${user._id}&success=true&slackConnected=true&token=${accessToken}`;
 
     res.redirect(redirectUrl);
   } catch (error) {
