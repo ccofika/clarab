@@ -1,0 +1,57 @@
+Conversation with Stake.com
+Started on January 2, 2026 at 02:32 AM Belgrade time CET (GMT+0100)
+
+--- January 2, 2026 ---
+
+02:32 AM | Triiicky: [Image: https://downloads.intercomcdn.com/i/o/cx1ywgf2/1911249462/fc1bd3b9a6df0e231445520bbb9e/IMG_1502.png?expires=1767573000&signature=a3006edf519596155aabba95b7c0b100d3ccb8250c3247e298882ba93e06bc40&req=dSkmF8t6lIVZW%2FMW1HO4zf8WmaqkmCKinRzI2C51ESLKPA%3D%3D%0A&resize=516x] Hey so I placed a bet on wheel, and it’s on it, but it no pay me :(
+
+02:34 AM | Stake Support: Our usual reply time
+🕒 A few minutes
+
+02:34 AM | IvanG from Stake.com: Hello there, 
+ Thank you for reaching out to us. 
+ 
+ Please allow me a few moments to check that for you.
+
+02:35 AM | Triiicky: [Image: https://downloads.intercomcdn.com/i/o/cx1ywgf2/1911245136/0f9d07bdb4ecbb3eaf239e8da13a/IMG_1504.png?expires=1767573000&signature=9395af37106db07d59ba3591bca37cb19bcadc24c57635f1acf7f2f09595edee&req=dSkmF8t6mIBcX%2FMW1HO4zQn8dLD%2FiJsqY%2FaUDOfnfwUCLQ%3D%3D%0A&resize=516x]
+
+02:35 AM | Triiicky: Ok
+
+02:36 AM | IvanG from Stake.com: Could you please provide us with the corresponding bet ID?
+
+02:38 AM | Triiicky: casino:435607475612
+
+02:41 AM | DusanMe from Stake.com: Hello there! 
+ 
+ Thank you for reaching out, I will take it from here. 
+ 
+ It would seem that your bet has been successfully settled as a loss. 
+ 
+ Could you please elaborate as to what the issue seems to be?
+
+02:44 AM | Triiicky: Confused how it is a loss if it literally on the red, zoomed in too
+
+02:44 AM | Triiicky: [Image: https://downloads.intercomcdn.com/i/o/cx1ywgf2/1911249462/fc1bd3b9a6df0e231445520bbb9e/IMG_1502.png?expires=1767573000&signature=a3006edf519596155aabba95b7c0b100d3ccb8250c3247e298882ba93e06bc40&req=dSkmF8t6lIVZW%2FMW1HO4zf8WmaqkmCKinRzI2C51ESLKPA%3D%3D%0A&resize=516x]
+
+02:44 AM | Triiicky: [Image: https://downloads.intercomcdn.com/i/o/cx1ywgf2/1911245136/0f9d07bdb4ecbb3eaf239e8da13a/IMG_1504.png?expires=1767573000&signature=9395af37106db07d59ba3591bca37cb19bcadc24c57635f1acf7f2f09595edee&req=dSkmF8t6mIBcX%2FMW1HO4zQn8dLD%2FiJsqY%2FaUDOfnfwUCLQ%3D%3D%0A&resize=516x]
+
+02:45 AM | Triiicky: Telling me it doesn’t land on the red there?
+
+02:48 AM | DusanMe from Stake.com: Please note that this is simply visual on your side, and you can check your bets on Provably Fair. 
+ 
+ You can read more about the topic in our Blog post "How does the provably fair system work?", here (https://stake.com/blog/how-does-the-provably-fair-system-work). 
+ 
+ The system makes the outcome of all Stake Originals bets randomly generated, foolproof and verifiable so if there were any form of manipulation or wrong doing being done, it would be in public for anyone to prove.
+﻿​﻿
+﻿If you have issues with the legitimacy of the bet(s), you are free to verify them using the tool on our site (https://stake.com/provably-fair/calculation) or other third-party websites offering validation tools such as ProvablyFair.me (https://www.provablyfair.me/casino/stake-verifier/). 
+ 
+ Note that the features above only pertain to Stake Original games (https://stake.com/casino/group/stake-originals). Third-party slot games don't use this system and are not handled by Stake directly. They are entirely handled by the providers themselves, and we merely offer them on our platform on their behalf. However, they are still massively popular worldwide which should attest to their fairness.
+
+--- January 3, 2026 ---
+
+02:53 AM | Stake Support: Hi Triiicky! We noticed that you recently contacted our Customer Service team. Please take a few seconds to tell us how satisfied you are with the assistance you received, using the buttons below:
+
+02:53 AM | Stake Support: Rate your conversation
+
+---
+Exported from Stake.com on January 5, 2026 at 12:53 AM Belgrade time CET (GMT+0100)

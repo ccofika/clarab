@@ -182,6 +182,8 @@ const developerRoutes = require('./routes/developerRoutes');
 const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
 const slackRoutes = require('./routes/slackRoutes');
 const qaRoutes = require('./routes/qaRoutes');
+const scrapingRoutes = require('./routes/scrapingRoutes');
+const knowledgeRoutes = require('./routes/knowledgeRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const activityRoutes = require('./routes/activityRoutes');
@@ -193,6 +195,7 @@ const issueRoutes = require('./routes/issueRoutes');
 const systemComponentRoutes = require('./routes/systemComponentRoutes');
 const maintenanceRoutes = require('./routes/maintenanceRoutes');
 const statusSubscriptionRoutes = require('./routes/statusSubscriptionRoutes');
+const rulesRoutes = require('./routes/rulesRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -206,6 +209,8 @@ app.use('/api/developer', developerRoutes); // Developer-only endpoints
 app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
 app.use('/api/slack', slackRoutes); // Slack integration
 app.use('/api/qa', qaRoutes); // QA Manager endpoints
+app.use('/api/qa/scrape', scrapingRoutes); // QA Scraping endpoints
+app.use('/api/qa/knowledge', knowledgeRoutes); // QA Knowledge Base endpoints
 app.use('/api/reports', reportRoutes); // Statistics/Reports system
 app.use('/api/chat', chatRoutes); // Chat endpoints
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
@@ -217,6 +222,7 @@ app.use('/api/issues', issueRoutes); // Active Issues tracking
 app.use('/api/system-components', systemComponentRoutes); // System component status
 app.use('/api/maintenance', maintenanceRoutes); // Scheduled maintenance
 app.use('/api/status-subscriptions', statusSubscriptionRoutes); // Status page subscriptions
+app.use('/api/qa/rules', rulesRoutes); // QA Rules (AI evaluation knowledge)
 
 // Root route
 app.get('/', (req, res) => {
@@ -325,6 +331,10 @@ require('./sockets/workspaceHandlers')(io);
 
 // Make io available to routes
 app.set('io', io);
+
+// Pass io to scraping controller for real-time updates
+const scrapingController = require('./controllers/scrapingController');
+scrapingController.setSocketIO(io);
 
 server.listen(PORT, () => {
   console.log(`🚀 Server is running on port ${PORT}`);
