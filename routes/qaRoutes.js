@@ -115,6 +115,15 @@ const {
 } = require('../controllers/macroController');
 
 const {
+  // Macro Ticket controllers (send ticket to another grader)
+  sendMacroTicket,
+  getPendingMacroTickets,
+  acceptMacroTicket,
+  declineMacroTicket,
+  getMacroTicket
+} = require('../controllers/macroTicketController');
+
+const {
   // Statistics controllers
   getStatisticCards,
   getStatisticCardsForUser,
@@ -306,6 +315,21 @@ router.post('/macros/:id/use', recordMacroUsage);
 
 // Get tickets where macro was used (paginated)
 router.get('/macros/:id/tickets', getMacroTickets);
+
+// ============================================
+// MACRO TICKET ROUTES (Send ticket to another grader)
+// ============================================
+
+// Get pending macro tickets for current user
+router.get('/macro-tickets/pending', getPendingMacroTickets);
+
+// Send a macro ticket to the grader managing an agent
+router.post('/macro-tickets', sendMacroTicket);
+
+// Get, accept, or decline a specific macro ticket
+router.get('/macro-tickets/:id', getMacroTicket);
+router.post('/macro-tickets/:id/accept', acceptMacroTicket);
+router.post('/macro-tickets/:id/decline', declineMacroTicket);
 
 // ============================================
 // ALL AGENTS ADMIN ROUTES (Admin only - Filip & Nevena)
