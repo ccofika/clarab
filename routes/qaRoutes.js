@@ -1,7 +1,24 @@
 const express = require('express');
 const router = express.Router();
+const multer = require('multer');
 const { protect } = require('../middleware/auth');
 const { validate } = require('../middleware/validation');
+
+// Configure multer for Excel file uploads
+const excelUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+        file.mimetype === 'application/vnd.ms-excel' ||
+        file.originalname.endsWith('.xlsx') ||
+        file.originalname.endsWith('.xls')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only Excel files are allowed'), false);
+    }
+  }
+});
 const {
   // Agent controllers
   getAllAgents,
@@ -37,7 +54,25 @@ const {
   getAllAgentsAdmin,
   updateAgentAdmin,
   mergeAgents,
-  deleteAgentAdmin
+  deleteAgentAdmin,
+  // Active Overview Admin controllers
+  getActiveOverview,
+  reassignTicket,
+  bulkReassignTickets,
+  adminBulkArchiveTickets,
+  // New Active Overview features
+  reassignAgentBetweenGraders,
+  swapAgentsBetweenGraders,
+  archiveAllForGrader,
+  getGradingVelocity,
+  getAgentHistory,
+  vacationModeRedistribute,
+  getWeekSetup,
+  saveWeekSetup,
+  copyLastWeekSetup,
+  getStaleTickets,
+  getScoreComparison,
+  parseExcelAssignments
 } = require('../controllers/qaController');
 
 const {
@@ -280,6 +315,56 @@ router.get('/all-agents', allAgentsAdminAuth, getAllAgentsAdmin);
 router.put('/all-agents/:id', allAgentsAdminAuth, updateAgentAdmin);
 router.delete('/all-agents/:id', allAgentsAdminAuth, deleteAgentAdmin);
 router.post('/all-agents/merge', allAgentsAdminAuth, mergeAgents);
+
+// ============================================
+// ACTIVE OVERVIEW ROUTES (Admin only - Filip & Nevena)
+// ============================================
+
+// Get all active tickets grouped by QA grader and agent
+router.get('/active-overview', allAgentsAdminAuth, getActiveOverview);
+
+// Reassign single ticket to another QA grader
+router.put('/tickets/:id/reassign', allAgentsAdminAuth, reassignTicket);
+
+// Bulk reassign tickets to another QA grader
+router.post('/tickets/bulk-reassign', allAgentsAdminAuth, bulkReassignTickets);
+
+// Bulk archive tickets from active overview
+router.post('/active-overview/bulk-archive', allAgentsAdminAuth, adminBulkArchiveTickets);
+
+// Reassign agent between graders (move agent + tickets)
+router.post('/active-overview/reassign-agent', allAgentsAdminAuth, reassignAgentBetweenGraders);
+
+// Swap agents between two graders
+router.post('/active-overview/swap-agents', allAgentsAdminAuth, swapAgentsBetweenGraders);
+
+// Archive all tickets for a specific grader
+router.post('/active-overview/archive-grader-tickets', allAgentsAdminAuth, archiveAllForGrader);
+
+// Get grading velocity (tickets graded per day)
+router.get('/active-overview/velocity', allAgentsAdminAuth, getGradingVelocity);
+
+// Get agent evaluation history
+router.get('/active-overview/agent-history/:agentId', allAgentsAdminAuth, getAgentHistory);
+
+// Vacation mode - redistribute agents
+router.post('/active-overview/vacation-mode', allAgentsAdminAuth, vacationModeRedistribute);
+
+// Week setup management
+router.get('/active-overview/week-setup', allAgentsAdminAuth, getWeekSetup);
+router.post('/active-overview/week-setup', allAgentsAdminAuth, saveWeekSetup);
+
+// Copy last week's setup
+router.post('/active-overview/copy-last-week', allAgentsAdminAuth, copyLastWeekSetup);
+
+// Get stale tickets (not graded within X days)
+router.get('/active-overview/stale-tickets', allAgentsAdminAuth, getStaleTickets);
+
+// Get score comparison between graders
+router.get('/active-overview/score-comparison', allAgentsAdminAuth, getScoreComparison);
+
+// Import agent assignments from Excel file
+router.post('/active-overview/import-excel', allAgentsAdminAuth, excelUpload.single('file'), parseExcelAssignments);
 
 // ============================================
 // STATISTICS ROUTES (Filip & Nevena only)
