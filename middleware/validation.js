@@ -180,6 +180,14 @@ const schemas = {
       .allow('')
       .messages({
         'string.max': 'Team must not exceed 100 characters'
+      }),
+    maestroName: Joi.string()
+      .max(200)
+      .trim()
+      .optional()
+      .allow('')
+      .messages({
+        'string.max': 'MaestroQA name must not exceed 200 characters'
       })
   }),
 
@@ -196,6 +204,11 @@ const schemas = {
       .allow(''),
     team: Joi.string()
       .max(100)
+      .trim()
+      .optional()
+      .allow(''),
+    maestroName: Joi.string()
+      .max(200)
       .trim()
       .optional()
       .allow('')
@@ -260,7 +273,14 @@ const schemas = {
       .optional()
       .messages({
         'array.base': 'Categories must be an array'
-      })
+      }),
+    scorecardVariant: Joi.string()
+      .valid('mentions', 'use_this_one', null)
+      .optional()
+      .allow(null),
+    scorecardValues: Joi.object()
+      .pattern(Joi.string(), Joi.number().min(0).max(4).allow(null))
+      .optional()
   }),
 
   updateTicket: Joi.object({
@@ -316,7 +336,14 @@ const schemas = {
       .optional()
       .messages({
         'array.base': 'Categories must be an array'
-      })
+      }),
+    scorecardVariant: Joi.string()
+      .valid('mentions', 'use_this_one', null)
+      .optional()
+      .allow(null),
+    scorecardValues: Joi.object()
+      .pattern(Joi.string(), Joi.number().min(0).max(4).allow(null))
+      .optional()
   })
 };
 

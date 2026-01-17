@@ -18,6 +18,12 @@ const agentSchema = new mongoose.Schema({
     trim: true,
     maxlength: [100, 'Team cannot exceed 100 characters']
   },
+  // Agent name as it appears in MaestroQA (for extension automation)
+  maestroName: {
+    type: String,
+    trim: true,
+    maxlength: [200, 'MaestroQA name cannot exceed 200 characters']
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

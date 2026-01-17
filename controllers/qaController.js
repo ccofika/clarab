@@ -167,22 +167,22 @@ exports.createAgent = async (req, res) => {
 // @access  Private
 exports.updateAgent = async (req, res) => {
   try {
-    // Update agent only if it belongs to current user
+    // Update agent if it's in current user's active grading list
     const agent = await Agent.findOneAndUpdate(
-      { _id: req.params.id, createdBy: req.user._id },
+      { _id: req.params.id, activeForUsers: req.user._id },
       req.body,
       { new: true, runValidators: true }
     );
 
     if (!agent) {
-      return res.status(404).json({ message: 'Agent not found' });
+      return res.status(404).json({ message: 'Agent not found or not in your grading list' });
     }
 
     logger.info(`Agent updated: ${agent.name} by user ${req.user.email}`);
     res.json(agent);
   } catch (error) {
     if (error.code === 11000) {
-      return res.status(400).json({ message: 'You already have an agent with this name' });
+      return res.status(400).json({ message: 'An agent with this name already exists' });
     }
     logger.error('Error updating agent:', error);
     res.status(500).json({ message: 'Server error' });
@@ -505,14 +505,30 @@ exports.createTicket = async (req, res) => {
       return res.status(400).json({ message: 'Invalid agent ID or agent is not in your grading list' });
     }
 
-    const ticket = await Ticket.create({
+    // Log scorecard data
+    logger.info(`Create ticket - scorecardVariant: ${req.body.scorecardVariant}`);
+    logger.info(`Create ticket - scorecardValues: ${JSON.stringify(req.body.scorecardValues)}`);
+
+    const ticketData = {
       ...req.body,
       createdBy: req.user._id
-    });
+    };
+
+    // Explicitly set scorecard fields
+    if (req.body.scorecardVariant !== undefined) {
+      ticketData.scorecardVariant = req.body.scorecardVariant;
+    }
+    if (req.body.scorecardValues !== undefined) {
+      ticketData.scorecardValues = req.body.scorecardValues;
+    }
+
+    const ticket = await Ticket.create(ticketData);
 
     const populatedTicket = await Ticket.findById(ticket._id)
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email');
+
+    logger.info(`Created ticket scorecardValues: ${JSON.stringify(populatedTicket.scorecardValues)}`);
 
     // Generate AI embeddings in background (don't await to avoid blocking response)
     const ticketIdForEmbed = ticket._id;
@@ -598,11 +614,24 @@ exports.updateTicket = async (req, res) => {
 
     // Log what we're trying to save
     logger.info(`Update ticket - full req.body: ${JSON.stringify(req.body)}`);
+    logger.info(`Update ticket - scorecardVariant: ${req.body.scorecardVariant}`);
+    logger.info(`Update ticket - scorecardValues: ${JSON.stringify(req.body.scorecardValues)}`);
+
+    // Build update object explicitly to ensure scorecard fields are included
+    const updateData = { ...req.body };
+
+    // Explicitly handle scorecard fields (Object type needs special handling)
+    if (req.body.scorecardVariant !== undefined) {
+      updateData.scorecardVariant = req.body.scorecardVariant;
+    }
+    if (req.body.scorecardValues !== undefined) {
+      updateData.scorecardValues = req.body.scorecardValues;
+    }
 
     const ticket = await Ticket.findByIdAndUpdate(
       req.params.id,
-      { $set: req.body },
-      { new: true }
+      { $set: updateData },
+      { new: true, runValidators: true }
     )
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');

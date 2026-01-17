@@ -93,6 +93,20 @@ const ticketSchema = new mongoose.Schema({
   },
   weekYear: {
     type: Number
+  },
+  // Scorecard system - for grading tickets based on agent position
+  // Variant is only used for Senior Scorecard (has two options: mentions or use_this_one)
+  scorecardVariant: {
+    type: String,
+    enum: ['mentions', 'use_this_one', null],
+    default: null
+  },
+  // Scorecard values stored as plain object
+  // Key = value name in snake_case (e.g., 'opening_message', 'knowledge')
+  // Value = index 0-4 (0=best, 3=worst, 4=N/A) or null if not set
+  scorecardValues: {
+    type: Object,
+    default: {}
   }
 }, {
   timestamps: true
