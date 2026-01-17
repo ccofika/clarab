@@ -425,4 +425,35 @@ router.route('/statistics/cards/:id')
   .put(statisticsAuth, updateStatisticCard)
   .delete(statisticsAuth, deleteStatisticCard);
 
+// ============================================
+// ASSIGNMENT ROUTES (MaestroQA Bot Tracking)
+// ============================================
+
+const {
+  getAgentAssignments,
+  createAssignment,
+  updateAssignment,
+  addTicketsToAssignment,
+  markTicketGraded,
+  getActiveAssignment
+} = require('../controllers/assignmentController');
+
+// Get all assignments for an agent
+router.get('/assignments/:agentId', protect, qaAuthorization, getAgentAssignments);
+
+// Get active assignment for an agent (current week)
+router.get('/assignments/:agentId/active', protect, qaAuthorization, getActiveAssignment);
+
+// Create new assignment
+router.post('/assignments', protect, qaAuthorization, createAssignment);
+
+// Update assignment
+router.put('/assignments/:assignmentId', protect, qaAuthorization, updateAssignment);
+
+// Add tickets to existing assignment
+router.post('/assignments/:assignmentId/tickets', protect, qaAuthorization, addTicketsToAssignment);
+
+// Mark ticket as graded in assignment
+router.post('/assignments/:assignmentId/graded/:ticketId', protect, qaAuthorization, markTicketGraded);
+
 module.exports = router;
