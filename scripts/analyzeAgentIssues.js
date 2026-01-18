@@ -38,6 +38,17 @@ const stripHtml = (html) => {
 };
 
 /**
+ * Create combined text from notes and feedback for embedding
+ * This provides richer semantic context for similarity matching
+ */
+const createCombinedText = (ticket) => {
+  const notes = stripHtml(ticket.notes);
+  const feedback = stripHtml(ticket.feedback);
+  if (!notes || notes.length < 10) return null;
+  return feedback ? `${notes} | ${feedback}` : notes;
+};
+
+/**
  * Check if agent has a good grade for a similar ticket
  * Uses category matching first, then embedding similarity as fallback
  */
@@ -52,14 +63,14 @@ async function findResolvingTicket(badTicket, goodTickets) {
     return sameCategoryGood;
   }
 
-  // Second check: Embedding similarity for notes
-  const badNotes = stripHtml(badTicket.notes);
-  if (!badNotes || badNotes.length < 10) return null;
+  // Second check: Embedding similarity using notes + feedback
+  const badCombinedText = createCombinedText(badTicket);
+  if (!badCombinedText) return null;
 
-  // Use stored notesEmbedding if available, otherwise generate
+  // Use stored notesEmbedding if available (now contains notes+feedback), otherwise generate
   let badEmbedding = badTicket.notesEmbedding;
   if (!badEmbedding || badEmbedding.length === 0) {
-    badEmbedding = await generateEmbedding(badNotes);
+    badEmbedding = await generateEmbedding(badCombinedText);
   }
   if (!badEmbedding) return null;
 
@@ -69,9 +80,9 @@ async function findResolvingTicket(badTicket, goodTickets) {
 
     let goodEmbedding = goodTicket.notesEmbedding;
     if (!goodEmbedding || goodEmbedding.length === 0) {
-      const goodNotes = stripHtml(goodTicket.notes);
-      if (goodNotes && goodNotes.length >= 10) {
-        goodEmbedding = await generateEmbedding(goodNotes);
+      const goodCombinedText = createCombinedText(goodTicket);
+      if (goodCombinedText) {
+        goodEmbedding = await generateEmbedding(goodCombinedText);
       }
     }
 

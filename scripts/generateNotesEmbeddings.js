@@ -1,30 +1,40 @@
 /**
- * Generate Notes-Only Embeddings for Graded Tickets
+ * Generate Combined Embeddings for Graded Tickets
  *
- * This script generates separate embeddings for just the notes field
- * to enable better notes-to-notes similarity search for the
- * "Similar Feedbacks" feature.
+ * This script generates embeddings combining notes + feedback
+ * for better similarity search in the "Similar Feedbacks" feature.
+ *
+ * The combined approach provides richer semantic context:
+ * - Notes (usually in Serbian) describe the situation
+ * - Feedback (in English) provides detailed explanation
+ * - Together they create a more accurate semantic representation
  *
  * Run: node scripts/generateNotesEmbeddings.js
- *
- * Best Practice (from research):
- * - Store separate embeddings for search vs full content
- * - Notes-to-notes comparison is more accurate than notes-to-(notes+feedback)
- * - This is an "asymmetric search" optimization
+ * Run with --force to regenerate ALL embeddings (ignoring existing ones)
  */
 
 require('dotenv').config();
 const mongoose = require('mongoose');
 const Ticket = require('../models/Ticket');
-const Agent = require('../models/Agent');
 const { generateEmbedding } = require('../utils/openai');
 
 const mongoUri = process.env.MONGODB_URI;
+
+// Check for --force flag to regenerate all embeddings
+const forceRegenerate = process.argv.includes('--force');
 
 // Strip HTML tags
 const stripHtml = (html) => {
   if (!html) return '';
   return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+};
+
+// Create combined text from notes and feedback
+const createCombinedText = (ticket) => {
+  const notes = stripHtml(ticket.notes);
+  const feedback = stripHtml(ticket.feedback);
+  if (!notes || notes.length < 10) return null;
+  return feedback ? `${notes} | ${feedback}` : notes;
 };
 
 async function connectDB() {
@@ -37,39 +47,44 @@ async function connectDB() {
   }
 }
 
-async function generateNotesEmbeddings() {
+async function generateCombinedEmbeddings() {
   await connectDB();
 
-  console.log('=== GENERATING NOTES-ONLY EMBEDDINGS ===\n');
+  console.log('=== GENERATING COMBINED (NOTES + FEEDBACK) EMBEDDINGS ===\n');
+  console.log(`Mode: ${forceRegenerate ? 'FORCE REGENERATE ALL' : 'Only missing embeddings'}\n`);
 
-  // Find all graded tickets with notes that don't have notesEmbedding yet
-  const query = {
+  // Build query based on mode
+  let query = {
     status: 'Graded',
-    notes: { $exists: true, $ne: null, $ne: '' },
-    $or: [
+    notes: { $exists: true, $ne: null, $ne: '' }
+  };
+
+  if (!forceRegenerate) {
+    // Only tickets without embeddings
+    query.$or = [
       { notesEmbedding: { $exists: false } },
       { notesEmbedding: null },
       { notesEmbedding: { $size: 0 } }
-    ]
-  };
+    ];
+  }
 
   const totalCount = await Ticket.countDocuments(query);
-  console.log(`Found ${totalCount} graded tickets needing notes embeddings\n`);
+  console.log(`Found ${totalCount} graded tickets to process\n`);
 
   if (totalCount === 0) {
-    console.log('✅ All tickets already have notes embeddings!');
+    console.log('✅ No tickets need processing!');
     await mongoose.connection.close();
     return;
   }
 
   // Process in batches
-  const batchSize = 10;
+  const batchSize = 20;
   let processed = 0;
   let errors = 0;
   let skipped = 0;
 
   const cursor = Ticket.find(query)
-    .select('_id ticketId notes')
+    .select('_id ticketId notes feedback')
     .cursor();
 
   let batch = [];
@@ -82,14 +97,14 @@ async function generateNotesEmbeddings() {
       await Promise.all(
         batch.map(async (t) => {
           try {
-            const cleanNotes = stripHtml(t.notes);
+            const combinedText = createCombinedText(t);
 
-            if (!cleanNotes || cleanNotes.length < 5) {
+            if (!combinedText) {
               skipped++;
               return;
             }
 
-            const notesEmbedding = await generateEmbedding(cleanNotes);
+            const notesEmbedding = await generateEmbedding(combinedText);
 
             if (notesEmbedding) {
               await Ticket.findByIdAndUpdate(t._id, {
@@ -119,14 +134,14 @@ async function generateNotesEmbeddings() {
     await Promise.all(
       batch.map(async (t) => {
         try {
-          const cleanNotes = stripHtml(t.notes);
+          const combinedText = createCombinedText(t);
 
-          if (!cleanNotes || cleanNotes.length < 5) {
+          if (!combinedText) {
             skipped++;
             return;
           }
 
-          const notesEmbedding = await generateEmbedding(cleanNotes);
+          const notesEmbedding = await generateEmbedding(combinedText);
 
           if (notesEmbedding) {
             await Ticket.findByIdAndUpdate(t._id, {
@@ -156,13 +171,14 @@ async function generateNotesEmbeddings() {
     notesEmbedding: { $exists: true, $type: 'array' },
     $expr: { $gt: [{ $size: '$notesEmbedding' }, 0] }
   });
-  console.log(`\nGraded tickets with notes embeddings: ${withEmbeddings}`);
+  const totalGraded = await Ticket.countDocuments({ status: 'Graded' });
+  console.log(`\nGraded tickets with embeddings: ${withEmbeddings}/${totalGraded}`);
 
   await mongoose.connection.close();
   console.log('\n✅ Done');
 }
 
-generateNotesEmbeddings().catch(err => {
+generateCombinedEmbeddings().catch(err => {
   console.error('Error:', err);
   process.exit(1);
 });

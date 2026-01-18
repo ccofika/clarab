@@ -360,11 +360,18 @@ exports.getAllTickets = async (req, res) => {
     const filter = {};
 
     // Get createdBy filter (grader) from query params
-    const { createdBy: createdByFilter } = req.query;
+    const { createdBy: createdByFilter, relatedMode } = req.query;
 
+    // RELATED MODE: For RelatedTicketsPanel - show ALL tickets for an agent
+    // regardless of archive status or who graded them
+    if (relatedMode === 'true') {
+      // No isArchived filter - include both archived and non-archived
+      // No createdBy filter - show tickets from all graders
+      // Only agent and categories filters apply
+    }
     // IMPORTANT: If viewing active tickets (not archived), filter by current user
     // If viewing archived tickets, show all tickets (for all QA agents) unless filtered
-    if (isArchived !== undefined) {
+    else if (isArchived !== undefined) {
       filter.isArchived = isArchived === 'true';
 
       // Only filter by user if viewing active tickets
@@ -553,10 +560,20 @@ exports.createTicket = async (req, res) => {
         }
       });
 
-    // Generate notes-only embedding for similar feedback search
+    // Generate combined embedding (notes + feedback) for similar feedback search
+    // This provides richer semantic context for similarity matching
+    const ticketFeedback = populatedTicket.feedback;
+    const stripHtml = (html) => html ? html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+
     if (ticketNotes && ticketNotes.trim().length >= 10) {
-      const cleanNotes = ticketNotes.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-      generateEmbedding(cleanNotes)
+      const cleanNotes = stripHtml(ticketNotes);
+      const cleanFeedback = stripHtml(ticketFeedback);
+      // Combine notes and feedback for richer embedding
+      const combinedText = cleanFeedback
+        ? `${cleanNotes} | ${cleanFeedback}`
+        : cleanNotes;
+
+      generateEmbedding(combinedText)
         .then(async (notesEmbedding) => {
           if (notesEmbedding) {
             await Ticket.findByIdAndUpdate(ticketIdForEmbed, { notesEmbedding });
@@ -657,10 +674,19 @@ exports.updateTicket = async (req, res) => {
         }
       });
 
-    // Regenerate notes-only embedding for similar feedback search
+    // Regenerate combined embedding (notes + feedback) for similar feedback search
+    const ticketFeedback = ticket.feedback;
+    const stripHtmlLocal = (html) => html ? html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() : '';
+
     if (ticketNotes && ticketNotes.trim().length >= 10) {
-      const cleanNotes = ticketNotes.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-      generateEmbedding(cleanNotes)
+      const cleanNotes = stripHtmlLocal(ticketNotes);
+      const cleanFeedback = stripHtmlLocal(ticketFeedback);
+      // Combine notes and feedback for richer embedding
+      const combinedText = cleanFeedback
+        ? `${cleanNotes} | ${cleanFeedback}`
+        : cleanNotes;
+
+      generateEmbedding(combinedText)
         .then(async (notesEmbedding) => {
           if (notesEmbedding) {
             await Ticket.findByIdAndUpdate(ticketIdForEmbed, { notesEmbedding });
@@ -1508,7 +1534,7 @@ exports.generateAllTicketEmbeddings = async (req, res) => {
 // Returns up to 10 results combining both methods
 exports.getSimilarFeedbacks = async (req, res) => {
   try {
-    const { notes, excludeTicketId, limit = 10 } = req.body;
+    const { notes, excludeTicketId, limit = 10, categories = [] } = req.body;
 
     // Validate notes - need meaningful content
     if (!notes || notes.trim().length < 10) {
@@ -1529,6 +1555,13 @@ exports.getSimilarFeedbacks = async (req, res) => {
       feedback: { $exists: true, $ne: null, $ne: '' },
       notes: { $exists: true, $ne: null, $ne: '' }
     };
+
+    // Filter by categories - only search tickets that share at least one category
+    // This improves accuracy by matching tickets with similar topics
+    if (categories && categories.length > 0) {
+      baseFilter.categories = { $in: categories };
+      logger.info(`Similar feedbacks: filtering by categories: ${categories.join(', ')}`);
+    }
 
     // Exclude current ticket if provided
     if (excludeTicketId) {
