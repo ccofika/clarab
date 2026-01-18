@@ -435,7 +435,8 @@ const {
   updateAssignment,
   addTicketsToAssignment,
   markTicketGraded,
-  getActiveAssignment
+  getActiveAssignment,
+  deleteAssignment
 } = require('../controllers/assignmentController');
 
 // Get all assignments for an agent
@@ -455,5 +456,107 @@ router.post('/assignments/:assignmentId/tickets', protect, qaAuthorization, addT
 
 // Mark ticket as graded in assignment
 router.post('/assignments/:assignmentId/graded/:ticketId', protect, qaAuthorization, markTicketGraded);
+
+// Delete assignment (reset)
+router.delete('/assignments/:assignmentId', protect, qaAuthorization, deleteAssignment);
+
+// ============================================
+// BUG REPORT ROUTES
+// ============================================
+const BugReport = require('../models/BugReport');
+
+// Bug report admin authorization - only Filip
+const bugReportAdminAuth = (req, res, next) => {
+  if (req.user.email !== 'filipkozomara@mebit.io') {
+    return res.status(403).json({
+      message: 'Access denied. Only admin can view bug reports.'
+    });
+  }
+  next();
+};
+
+// Submit a bug report (any QA user)
+router.post('/bug-reports', async (req, res) => {
+  try {
+    const { title, description, currentPage, userAgent } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ message: 'Title is required' });
+    }
+
+    const bugReport = await BugReport.create({
+      title: title.trim(),
+      description: description?.trim() || '',
+      reportedBy: req.user._id,
+      reporterEmail: req.user.email,
+      currentPage: currentPage || '',
+      userAgent: userAgent || ''
+    });
+
+    res.status(201).json({
+      message: 'Bug report submitted successfully',
+      bugReport
+    });
+  } catch (error) {
+    console.error('Error creating bug report:', error);
+    res.status(500).json({ message: 'Failed to submit bug report' });
+  }
+});
+
+// Get all bug reports (admin only)
+router.get('/bug-reports', bugReportAdminAuth, async (req, res) => {
+  try {
+    const bugReports = await BugReport.find()
+      .sort({ createdAt: -1 })
+      .populate('reportedBy', 'name email');
+
+    res.json(bugReports);
+  } catch (error) {
+    console.error('Error fetching bug reports:', error);
+    res.status(500).json({ message: 'Failed to fetch bug reports' });
+  }
+});
+
+// Update bug report status (admin only)
+router.patch('/bug-reports/:id', bugReportAdminAuth, async (req, res) => {
+  try {
+    const { status, priority } = req.body;
+    const updateData = {};
+
+    if (status) updateData.status = status;
+    if (priority) updateData.priority = priority;
+
+    const bugReport = await BugReport.findByIdAndUpdate(
+      req.params.id,
+      updateData,
+      { new: true }
+    ).populate('reportedBy', 'name email');
+
+    if (!bugReport) {
+      return res.status(404).json({ message: 'Bug report not found' });
+    }
+
+    res.json(bugReport);
+  } catch (error) {
+    console.error('Error updating bug report:', error);
+    res.status(500).json({ message: 'Failed to update bug report' });
+  }
+});
+
+// Delete bug report (admin only)
+router.delete('/bug-reports/:id', bugReportAdminAuth, async (req, res) => {
+  try {
+    const bugReport = await BugReport.findByIdAndDelete(req.params.id);
+
+    if (!bugReport) {
+      return res.status(404).json({ message: 'Bug report not found' });
+    }
+
+    res.json({ message: 'Bug report deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting bug report:', error);
+    res.status(500).json({ message: 'Failed to delete bug report' });
+  }
+});
 
 module.exports = router;

@@ -192,3 +192,20 @@ exports.markTicketGraded = async (req, res) => {
     res.status(500).json({ message: 'Failed to mark ticket graded' });
   }
 };
+
+// Delete assignment (reset)
+exports.deleteAssignment = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+
+    const assignment = await QAAssignment.findByIdAndDelete(assignmentId);
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found' });
+    }
+
+    res.json({ message: 'Assignment deleted successfully', assignmentId });
+  } catch (error) {
+    console.error('Error deleting assignment:', error);
+    res.status(500).json({ message: 'Failed to delete assignment' });
+  }
+};
