@@ -3,6 +3,7 @@ const router = express.Router();
 const multer = require('multer');
 const { protect } = require('../middleware/auth');
 const { validate } = require('../middleware/validation');
+const QAAllowedEmail = require('../models/QAAllowedEmail');
 
 // Configure multer for Excel file uploads
 const excelUpload = multer({
@@ -139,22 +140,25 @@ const {
   getStatisticsUsers
 } = require('../controllers/statisticsController');
 
-// Authorization middleware - only allow specific emails
-const qaAuthorization = (req, res, next) => {
-  const allowedEmails = [
-    'filipkozomara@mebit.io',
-    'vasilijevitorovic@mebit.io',
-    'nevena@mebit.io',
-    'mladenjorganovic@mebit.io'
-  ];
+// Authorization middleware - check database for allowed emails
+const qaAuthorization = async (req, res, next) => {
+  try {
+    // Check if user's email is in the allowed list
+    const allowedEmail = await QAAllowedEmail.findOne({ email: req.user.email.toLowerCase() });
 
-  if (!allowedEmails.includes(req.user.email)) {
-    return res.status(403).json({
-      message: 'Access denied. You do not have permission to access QA Manager.'
+    if (!allowedEmail) {
+      return res.status(403).json({
+        message: 'Access denied. You do not have permission to access QA Manager.'
+      });
+    }
+
+    next();
+  } catch (error) {
+    console.error('QA Authorization error:', error);
+    return res.status(500).json({
+      message: 'Authorization check failed'
     });
   }
-
-  next();
 };
 
 // Admin authorization - only Filip and Nevena for All Agents management
@@ -189,7 +193,19 @@ const statisticsAuth = (req, res, next) => {
   next();
 };
 
-// Apply authentication and authorization to all routes
+// Check access endpoint - needs to be BEFORE qaAuthorization middleware
+// This allows frontend to check if user has QA access without getting 403
+router.get('/check-access', protect, async (req, res) => {
+  try {
+    const allowedEmail = await QAAllowedEmail.findOne({ email: req.user.email.toLowerCase() });
+    res.json({ hasAccess: !!allowedEmail });
+  } catch (error) {
+    console.error('Check access error:', error);
+    res.json({ hasAccess: false });
+  }
+});
+
+// Apply authentication and authorization to all other routes
 router.use(protect);
 router.use(qaAuthorization);
 
