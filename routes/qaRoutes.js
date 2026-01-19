@@ -124,6 +124,8 @@ const {
   getMacroTicket
 } = require('../controllers/macroTicketController');
 
+const { analyzeAllAgents } = require('../scripts/analyzeAgentIssues');
+
 const {
   // Statistics controllers
   getStatisticCards,
@@ -355,6 +357,28 @@ router.get('/all-agents', allAgentsAdminAuth, getAllAgentsAdmin);
 router.put('/all-agents/:id', allAgentsAdminAuth, updateAgentAdmin);
 router.delete('/all-agents/:id', allAgentsAdminAuth, deleteAgentAdmin);
 router.post('/all-agents/merge', allAgentsAdminAuth, mergeAgents);
+
+// Trigger AI analysis of agent issues (manual run of weekly cron job)
+router.post('/all-agents/analyze-issues', allAgentsAdminAuth, async (req, res) => {
+  try {
+    const results = await analyzeAllAgents(false);
+    const totalUnresolved = results.reduce((sum, r) => sum + (r.unresolvedCount || 0), 0);
+    const totalBadGrades = results.reduce((sum, r) => sum + (r.badGrades || 0), 0);
+
+    res.json({
+      message: 'Analysis complete',
+      stats: {
+        agentsAnalyzed: results.length,
+        totalBadGrades,
+        totalUnresolved
+      },
+      results
+    });
+  } catch (error) {
+    console.error('Error running agent issues analysis:', error);
+    res.status(500).json({ message: 'Failed to run analysis', error: error.message });
+  }
+});
 
 // ============================================
 // ACTIVE OVERVIEW ROUTES (Admin only - Filip & Nevena)

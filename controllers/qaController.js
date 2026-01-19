@@ -1999,15 +1999,13 @@ exports.deleteAgentAdmin = async (req, res) => {
 // ACTIVE OVERVIEW CONTROLLERS (Admin only - Filip & Nevena)
 // ============================================
 
-// QA Grader emails for the overview
-const QA_GRADER_EMAILS = [
-  'vasilijevitorovic@mebit.io',
-  'jovangajic@mebit.io',
-  'mladenjovanovic@mebit.io',
-  'filipkozomara@mebit.io',
-  'nevena@mebit.io',
-  'mladenjorganovic@mebit.io'
-];
+const QAAllowedEmail = require('../models/QAAllowedEmail');
+
+// Helper function to get all QA grader emails from database
+const getQAGraderEmails = async () => {
+  const allowedEmails = await QAAllowedEmail.find().select('email');
+  return allowedEmails.map(e => e.email);
+};
 
 // @desc    Get all active tickets grouped by QA grader and agent (Admin only)
 // @route   GET /api/qa/active-overview
@@ -2016,9 +2014,12 @@ exports.getActiveOverview = async (req, res) => {
   try {
     const User = require('../models/User');
 
+    // Get all QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get all QA graders
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     const graderIds = qaGraders.map(g => g._id);
@@ -2212,7 +2213,8 @@ exports.reassignTicket = async (req, res) => {
       return res.status(404).json({ message: 'Grader not found' });
     }
 
-    if (!QA_GRADER_EMAILS.includes(newGrader.email)) {
+    const qaGraderEmails = await getQAGraderEmails();
+    if (!qaGraderEmails.includes(newGrader.email)) {
       return res.status(400).json({ message: 'Target user is not a valid QA grader' });
     }
 
@@ -2266,7 +2268,8 @@ exports.bulkReassignTickets = async (req, res) => {
       return res.status(404).json({ message: 'Grader not found' });
     }
 
-    if (!QA_GRADER_EMAILS.includes(newGrader.email)) {
+    const qaGraderEmails = await getQAGraderEmails();
+    if (!qaGraderEmails.includes(newGrader.email)) {
       return res.status(400).json({ message: 'Target user is not a valid QA grader' });
     }
 
@@ -2342,7 +2345,8 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
       return res.status(404).json({ message: 'One or both graders not found' });
     }
 
-    if (!QA_GRADER_EMAILS.includes(fromGrader.email) || !QA_GRADER_EMAILS.includes(toGrader.email)) {
+    const qaGraderEmails = await getQAGraderEmails();
+    if (!qaGraderEmails.includes(fromGrader.email) || !qaGraderEmails.includes(toGrader.email)) {
       return res.status(400).json({ message: 'Both users must be valid QA graders' });
     }
 
@@ -2509,9 +2513,12 @@ exports.getGradingVelocity = async (req, res) => {
     const { days = 14 } = req.query;
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get QA graders
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     const startDate = new Date();
@@ -2686,9 +2693,12 @@ exports.vacationModeRedistribute = async (req, res) => {
       return res.status(404).json({ message: 'Grader not found' });
     }
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get other active graders (exclude vacation grader)
     const otherGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS.filter(e => e !== vacationGrader.email) }
+      email: { $in: qaGraderEmails.filter(e => e !== vacationGrader.email) }
     }).select('_id name email');
 
     if (otherGraders.length === 0) {
@@ -2779,9 +2789,12 @@ exports.getWeekSetup = async (req, res) => {
   try {
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get all QA graders
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     // Get all non-removed agents
@@ -2853,9 +2866,12 @@ exports.saveWeekSetup = async (req, res) => {
 
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get QA grader IDs
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id email');
 
     const graderIds = qaGraders.map(g => g._id);
@@ -2898,6 +2914,9 @@ exports.copyLastWeekSetup = async (req, res) => {
   try {
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     // Get the start of last week (Monday)
     const today = new Date();
     const dayOfWeek = today.getDay();
@@ -2911,7 +2930,7 @@ exports.copyLastWeekSetup = async (req, res) => {
 
     // Find which agents each grader was evaluating last week based on ticket data
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     const lastWeekSetup = [];
@@ -2961,6 +2980,9 @@ exports.getStaleTickets = async (req, res) => {
     const { days = 5 } = req.query;
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - parseInt(days));
 
@@ -2978,7 +3000,7 @@ exports.getStaleTickets = async (req, res) => {
     // Group by grader
     const groupedByGrader = {};
     const graders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     graders.forEach(g => {
@@ -3018,11 +3040,14 @@ exports.getScoreComparison = async (req, res) => {
     const { weeks = 4 } = req.query;
     const User = require('../models/User');
 
+    // Get QA grader emails from database
+    const qaGraderEmails = await getQAGraderEmails();
+
     const startDate = new Date();
     startDate.setDate(startDate.getDate() - (parseInt(weeks) * 7));
 
     const qaGraders = await User.find({
-      email: { $in: QA_GRADER_EMAILS }
+      email: { $in: qaGraderEmails }
     }).select('_id name email');
 
     const comparison = [];
