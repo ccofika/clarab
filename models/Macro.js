@@ -30,6 +30,24 @@ const macroSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  // Whether this macro is public (visible to all QA graders)
+  isPublic: {
+    type: Boolean,
+    default: false
+  },
+  // Users this macro is shared with (chain tracking for cascade removal)
+  sharedWith: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    addedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    }
+  }],
   // Track which tickets have used this macro (for "used in" section)
   usedInTickets: [{
     ticketId: {
@@ -59,6 +77,8 @@ const macroSchema = new mongoose.Schema({
 macroSchema.index({ createdBy: 1, title: 1 }); // For user's macro list with title search
 macroSchema.index({ createdBy: 1, usageCount: -1 }); // For sorting by usage
 macroSchema.index({ 'usedInTickets.ticketId': 1 }); // For finding macro by ticket
+macroSchema.index({ isPublic: 1 }); // For finding public macros
+macroSchema.index({ 'sharedWith.userId': 1 }); // For finding macros shared with user
 
 // Text index for full-text search
 macroSchema.index({ title: 'text' });

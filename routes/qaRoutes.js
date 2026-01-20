@@ -112,7 +112,8 @@ const {
   updateMacro,
   deleteMacro,
   recordMacroUsage,
-  getMacroTickets
+  getMacroTickets,
+  getQAGradersForSharing
 } = require('../controllers/macroController');
 
 const {
@@ -318,6 +319,9 @@ router.route('/summaries/:id')
 
 // Search must be before :id route
 router.get('/macros/search', searchMacros);
+
+// Get QA graders for sharing macros (must be before :id route)
+router.get('/macros/graders', getQAGradersForSharing);
 
 router.route('/macros')
   .get(getAllMacros)
