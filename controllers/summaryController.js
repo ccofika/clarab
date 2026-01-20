@@ -135,14 +135,20 @@ const generateSummary = async (req, res) => {
       }
     });
 
-    // Calculate weekly totals per agent
+    // Calculate weekly totals and scores per agent
     const weeklyTotalsPerAgent = {};
+    const weeklyGradedTicketsPerAgent = {};
     weekTickets.forEach(ticket => {
       const agentId = ticket.agent._id.toString();
       if (!weeklyTotalsPerAgent[agentId]) {
         weeklyTotalsPerAgent[agentId] = 0;
+        weeklyGradedTicketsPerAgent[agentId] = [];
       }
       weeklyTotalsPerAgent[agentId]++;
+      // Collect all graded tickets for overall score calculation
+      if (ticket.qualityScorePercent !== null && ticket.qualityScorePercent !== undefined) {
+        weeklyGradedTicketsPerAgent[agentId].push(ticket);
+      }
     });
 
     // STEP 1: Build structure for each agent
@@ -164,7 +170,17 @@ const generateSummary = async (req, res) => {
       totalBoth += bothCount;
 
       const allGradedTickets = [...group.gradedOnly, ...group.selectedAndGraded];
-      const avgScore = calculateAverageScore(allGradedTickets);
+
+      // Calculate OVERALL score from all weekly graded tickets (not just today's)
+      const weeklyGradedTickets = weeklyGradedTicketsPerAgent[agentId] || [];
+      const overallScore = calculateAverageScore(weeklyGradedTickets);
+
+      // Today's graded count for comparison
+      const todayGradedCount = gradedCount + bothCount;
+
+      // Only show "ukupno" if there are tickets from previous days (weeklyTotal > todayGradedCount)
+      const showUkupno = weeklyTotal > todayGradedCount;
+      const ukupnoText = showUkupno ? ` ukupno ${weeklyTotal}` : '';
 
       let headerLine = '';
       let type = '';
@@ -177,12 +193,12 @@ const generateSummary = async (req, res) => {
         type = 'selected';
       } else if (gradedCount > 0 && selectedCount === 0 && bothCount === 0) {
         // Only graded
-        headerLine = `${group.agentName} - ocenjeno ${gradedCount} ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+        headerLine = `${group.agentName} - ocenjeno ${gradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
         type = 'graded';
         needsAISummary = true;
       } else if (bothCount > 0 && selectedCount === 0 && gradedCount === 0) {
         // Only selected and graded (same tickets)
-        headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+        headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
         type = 'both';
         needsAISummary = true;
       } else {
@@ -196,11 +212,11 @@ const generateSummary = async (req, res) => {
         }
         if (gradedCount > 0 || bothCount > 0) {
           if (bothCount > 0 && gradedCount === 0) {
-            headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+            headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
           } else if (bothCount > 0 && gradedCount > 0) {
-            headerLine = `${group.agentName} - izdvojen ${bothCount} i ocenjeno ${gradedCount} tiketa ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+            headerLine = `${group.agentName} - izdvojen ${bothCount} i ocenjeno ${gradedCount} tiketa${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
           } else {
-            headerLine = `${group.agentName} - ocenjeno ${gradedCount} ukupno ${weeklyTotal}${avgScore !== null ? ` - ${avgScore}%` : ''}`;
+            headerLine = `${group.agentName} - ocenjeno ${gradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
           }
           type = bothCount > 0 ? 'both' : 'graded';
           needsAISummary = true;
@@ -224,7 +240,7 @@ const generateSummary = async (req, res) => {
           type: type || 'selected',
           count: selectedCount + gradedCount + bothCount,
           weeklyTotal,
-          averageScore: avgScore
+          averageScore: overallScore
         });
       }
     }
@@ -276,24 +292,37 @@ const generateSummary = async (req, res) => {
     const title = Summary.formatTitle(targetDate, shift);
 
     // Create and save summary
-    const summary = await Summary.create({
-      userId,
-      date: startOfDay,
-      shift,
-      title,
-      content: content.trim(),
-      metadata: {
-        ticketCount: {
-          selected: totalSelected,
-          graded: totalGraded,
-          both: totalBoth
-        },
-        agentsSummarized,
-        generatedAt: new Date()
-      }
-    });
+    try {
+      const summary = await Summary.create({
+        userId,
+        date: startOfDay,
+        shift,
+        title,
+        content: content.trim(),
+        metadata: {
+          ticketCount: {
+            selected: totalSelected,
+            graded: totalGraded,
+            both: totalBoth
+          },
+          agentsSummarized,
+          generatedAt: new Date()
+        }
+      });
 
-    res.status(201).json(summary);
+      res.status(201).json(summary);
+    } catch (createError) {
+      // Handle duplicate key error - summary already exists
+      if (createError.code === 11000) {
+        // Try to find and return the existing summary
+        const existingSummary = await Summary.findOne({ userId, date: startOfDay, shift });
+        return res.status(400).json({
+          message: `Summary already exists for this date and ${shift} shift. You can edit or delete it.`,
+          existingSummaryId: existingSummary?._id
+        });
+      }
+      throw createError;
+    }
   } catch (error) {
     console.error('Generate summary error:', error);
     res.status(500).json({ message: 'Failed to generate summary', error: error.message });

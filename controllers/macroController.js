@@ -70,7 +70,7 @@ exports.searchMacros = async (req, res) => {
 exports.createMacro = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { title, feedback } = req.body;
+    const { title, feedback, scorecardData, categories } = req.body;
 
     if (!title || !feedback) {
       return res.status(400).json({ message: 'Title and feedback are required' });
@@ -86,11 +86,23 @@ exports.createMacro = async (req, res) => {
       return res.status(400).json({ message: 'A macro with this title already exists' });
     }
 
-    const macro = await Macro.create({
+    const macroData = {
       title: title.trim(),
       feedback,
       createdBy: userId
-    });
+    };
+
+    // Add optional scorecard data if provided
+    if (scorecardData && typeof scorecardData === 'object') {
+      macroData.scorecardData = scorecardData;
+    }
+
+    // Add optional categories if provided
+    if (categories && Array.isArray(categories)) {
+      macroData.categories = categories;
+    }
+
+    const macro = await Macro.create(macroData);
 
     res.status(201).json(macro);
   } catch (error) {
@@ -105,7 +117,7 @@ exports.createMacro = async (req, res) => {
 exports.updateMacro = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { title, feedback } = req.body;
+    const { title, feedback, scorecardData, categories } = req.body;
 
     const macro = await Macro.findOne({
       _id: req.params.id,
@@ -131,6 +143,8 @@ exports.updateMacro = async (req, res) => {
 
     if (title) macro.title = title.trim();
     if (feedback !== undefined) macro.feedback = feedback;
+    if (scorecardData !== undefined) macro.scorecardData = scorecardData;
+    if (categories !== undefined) macro.categories = categories;
 
     await macro.save();
 

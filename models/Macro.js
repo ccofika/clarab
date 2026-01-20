@@ -13,6 +13,17 @@ const macroSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Macro feedback content is required']
   },
+  // Scorecard data per agent position
+  // Keys are agent positions (e.g., 'Junior Scorecard'), values are { values: Object, variant: String|null }
+  scorecardData: {
+    type: Object,
+    default: {}
+  },
+  // Categories (optional, same format as ticket.categories)
+  categories: [{
+    type: String,
+    trim: true
+  }],
   // User who created this macro (private per user)
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,

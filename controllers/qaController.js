@@ -2033,7 +2033,7 @@ exports.getActiveOverview = async (req, res) => {
       const activeAgents = await Agent.find({
         activeForUsers: grader._id,
         isRemoved: { $ne: true }
-      }).select('_id name team position').lean();
+      }).select('_id name team position maestroName').lean();
 
       if (activeAgents.length === 0) {
         continue; // Skip graders with no active agents
@@ -2072,6 +2072,7 @@ exports.getActiveOverview = async (req, res) => {
             agentName: agent.name,
             agentTeam: agent.team || '',
             agentPosition: agent.position || '',
+            maestroName: agent.maestroName || '',
             tickets: [],
             stats: { total: 0, graded: 0, selected: 0, avgScore: 0 }
           }))
@@ -2091,6 +2092,7 @@ exports.getActiveOverview = async (req, res) => {
           agentName: agent.name,
           agentTeam: agent.team || '',
           agentPosition: agent.position || '',
+          maestroName: agent.maestroName || '',
           tickets: [],
           stats: {
             total: 0,
@@ -2799,7 +2801,7 @@ exports.getWeekSetup = async (req, res) => {
 
     // Get all non-removed agents
     const allAgents = await Agent.find({ isRemoved: { $ne: true } })
-      .select('_id name team position activeForUsers')
+      .select('_id name team position maestroName activeForUsers')
       .sort({ name: 1 });
 
     // Build setup for each grader
@@ -2820,7 +2822,8 @@ exports.getWeekSetup = async (req, res) => {
           _id: a._id,
           name: a.name,
           team: a.team,
-          position: a.position
+          position: a.position,
+          maestroName: a.maestroName
         }))
       });
     }
@@ -2838,13 +2841,15 @@ exports.getWeekSetup = async (req, res) => {
         _id: a._id,
         name: a.name,
         team: a.team,
-        position: a.position
+        position: a.position,
+        maestroName: a.maestroName
       })),
       allAgents: allAgents.map(a => ({
         _id: a._id,
         name: a.name,
         team: a.team,
-        position: a.position
+        position: a.position,
+        maestroName: a.maestroName
       }))
     });
   } catch (error) {

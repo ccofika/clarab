@@ -582,6 +582,16 @@ PRAVILA:
 - Ako ima više grešaka, spoji ih prirodno u tekst
 - Na kraju možeš dodati "Ostalo je okej." ili "Sve u svemu dobro radi." ako ima i dobrih stvari
 
+VAŽNO - STIL PISANJA:
+- Koristi ISTI stil pisanja kao u feedback-u koji ti je dat za svaki tiket
+- Ako u feedback-u piše na određeni način, ti piši summary na isti način
+- Imitiraj ton i formulacije iz feedback-a
+
+VAŽNO - ENGLESKI TERMINI:
+- Pisi na srpskom ALI sve termine vezane za platformu OSTAVI NA ENGLESKOM
+- Primeri termina koji MORAJU biti na engleskom: deposit, withdraw, gambling limit, self-exclusion, KYC, verification, bonus, wagering, cashout, balance, account, wallet, crypto, affiliate, conversion, role, troubleshooting, ACP, W role, etc.
+- Nemoj prevoditi ove termine - piši ih tačno onako kako su napisani u feedback-u
+
 PRIMERI DOBROG STILA:
 "Savetovao korisnika da prvo povuce crypto na external wallet umesto direktno na drugi stake account, za cime nije bilo razloga. Ostalo je okej."
 
