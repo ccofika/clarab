@@ -113,7 +113,8 @@ const {
   deleteMacro,
   recordMacroUsage,
   getMacroTickets,
-  getQAGradersForSharing
+  getQAGradersForSharing,
+  getQAGradersWithMacroCounts
 } = require('../controllers/macroController');
 
 const {
@@ -322,6 +323,9 @@ router.get('/macros/search', searchMacros);
 
 // Get QA graders for sharing macros (must be before :id route)
 router.get('/macros/graders', getQAGradersForSharing);
+
+// Get QA graders with macro counts (admin only, for dropdown)
+router.get('/macros/graders-with-counts', getQAGradersWithMacroCounts);
 
 router.route('/macros')
   .get(getAllMacros)

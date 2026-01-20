@@ -6,33 +6,60 @@ const logger = require('../utils/logger');
 // MACRO CONTROLLERS
 // ============================================
 
+// Admin emails that have access to all macros
+const MACRO_ADMIN_EMAILS = ['filipkozomara@mebit.io', 'nevena@mebit.io'];
+
+// Helper to check if user is a macro admin
+const isMacroAdmin = (userEmail) => {
+  return MACRO_ADMIN_EMAILS.includes(userEmail?.toLowerCase());
+};
+
 // @desc    Get all macros for current user (own + public + shared with user)
-// @route   GET /api/qa/macros
+// @route   GET /api/qa/macros?creatorId=xxx (optional, admin only)
 // @access  Private
 exports.getAllMacros = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
+    const isAdmin = isMacroAdmin(userEmail);
+    const { creatorId } = req.query;
 
-    // Find macros where:
-    // 1. User created them
-    // 2. Macro is public
-    // 3. Macro is shared with user
-    const macros = await Macro.find({
-      $or: [
-        { createdBy: userId },
-        { isPublic: true },
-        { 'sharedWith.userId': userId }
-      ]
-    })
-      .populate('createdBy', 'name email')
-      .sort({ usageCount: -1, title: 1 });
+    let macros;
+
+    // If admin and creatorId is specified, get all macros by that creator
+    if (isAdmin && creatorId) {
+      macros = await Macro.find({ createdBy: creatorId })
+        .populate('createdBy', 'name email')
+        .sort({ usageCount: -1, title: 1 });
+    } else {
+      // Normal query: own + public + shared with user
+      macros = await Macro.find({
+        $or: [
+          { createdBy: userId },
+          { isPublic: true },
+          { 'sharedWith.userId': userId }
+        ]
+      })
+        .populate('createdBy', 'name email')
+        .sort({ usageCount: -1, title: 1 });
+    }
 
     // Add ownership info to each macro
     const macrosWithOwnership = macros.map(macro => {
       const macroObj = macro.toObject();
-      macroObj.isOwner = macro.createdBy._id.toString() === userId.toString();
-      macroObj.isSharedWithMe = !macroObj.isOwner && !macro.isPublic &&
+      const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+
+      // For admins viewing others' macros via creatorId filter, grant edit access
+      // but keep isOwner false so "Created by" still shows the original creator
+      macroObj.isOwner = isActualOwner;
+      macroObj.isSharedWithMe = !isActualOwner && !macro.isPublic &&
         macro.sharedWith.some(s => s.userId.toString() === userId.toString());
+
+      // Admin flag for frontend to know they can edit
+      if (isAdmin && !isActualOwner) {
+        macroObj.canAdminEdit = true;
+      }
+
       return macroObj;
     });
 
@@ -49,23 +76,39 @@ exports.getAllMacros = async (req, res) => {
 exports.getMacro = async (req, res) => {
   try {
     const userId = req.user._id;
-    const macro = await Macro.findOne({
-      _id: req.params.id,
-      $or: [
-        { createdBy: userId },
-        { isPublic: true },
-        { 'sharedWith.userId': userId }
-      ]
-    }).populate('createdBy', 'name email');
+    const userEmail = req.user.email;
+    const isAdmin = isMacroAdmin(userEmail);
+
+    let macro;
+
+    if (isAdmin) {
+      // Admins can access any macro
+      macro = await Macro.findById(req.params.id).populate('createdBy', 'name email');
+    } else {
+      macro = await Macro.findOne({
+        _id: req.params.id,
+        $or: [
+          { createdBy: userId },
+          { isPublic: true },
+          { 'sharedWith.userId': userId }
+        ]
+      }).populate('createdBy', 'name email');
+    }
 
     if (!macro) {
       return res.status(404).json({ message: 'Macro not found' });
     }
 
     const macroObj = macro.toObject();
-    macroObj.isOwner = macro.createdBy._id.toString() === userId.toString();
-    macroObj.isSharedWithMe = !macroObj.isOwner && !macro.isPublic &&
+    const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+    macroObj.isOwner = isActualOwner;
+    macroObj.isSharedWithMe = !isActualOwner && !macro.isPublic &&
       macro.sharedWith.some(s => s.userId.toString() === userId.toString());
+
+    // Admin flag for frontend
+    if (isAdmin && !isActualOwner) {
+      macroObj.canAdminEdit = true;
+    }
 
     res.json(macroObj);
   } catch (error) {
@@ -75,21 +118,37 @@ exports.getMacro = async (req, res) => {
 };
 
 // @desc    Search macros by title (partial match)
-// @route   GET /api/qa/macros/search?q=term
+// @route   GET /api/qa/macros/search?q=term&creatorId=xxx (optional, admin only)
 // @access  Private
 exports.searchMacros = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
+    const isAdmin = isMacroAdmin(userEmail);
     const searchTerm = req.query.q || '';
+    const { creatorId } = req.query;
 
-    const macros = await Macro.find({
-      $or: [
-        { createdBy: userId },
-        { isPublic: true },
-        { 'sharedWith.userId': userId }
-      ],
-      title: { $regex: searchTerm, $options: 'i' }
-    })
+    let query;
+
+    // If admin and creatorId is specified, search only that creator's macros
+    if (isAdmin && creatorId) {
+      query = {
+        createdBy: creatorId,
+        title: { $regex: searchTerm, $options: 'i' }
+      };
+    } else {
+      // Normal query: own + public + shared with user
+      query = {
+        $or: [
+          { createdBy: userId },
+          { isPublic: true },
+          { 'sharedWith.userId': userId }
+        ],
+        title: { $regex: searchTerm, $options: 'i' }
+      };
+    }
+
+    const macros = await Macro.find(query)
       .populate('createdBy', 'name email')
       .sort({ usageCount: -1, title: 1 })
       .limit(20);
@@ -97,9 +156,16 @@ exports.searchMacros = async (req, res) => {
     // Add ownership info to each macro
     const macrosWithOwnership = macros.map(macro => {
       const macroObj = macro.toObject();
-      macroObj.isOwner = macro.createdBy._id.toString() === userId.toString();
-      macroObj.isSharedWithMe = !macroObj.isOwner && !macro.isPublic &&
+      const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+      macroObj.isOwner = isActualOwner;
+      macroObj.isSharedWithMe = !isActualOwner && !macro.isPublic &&
         macro.sharedWith.some(s => s.userId.toString() === userId.toString());
+
+      // Admin flag for frontend
+      if (isAdmin && !isActualOwner) {
+        macroObj.canAdminEdit = true;
+      }
+
       return macroObj;
     });
 
@@ -179,30 +245,41 @@ exports.createMacro = async (req, res) => {
 exports.updateMacro = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
+    const isAdmin = isMacroAdmin(userEmail);
     const { title, feedback, scorecardData, categories, isPublic, sharedWith } = req.body;
 
-    // First find macro that user has access to
-    const macro = await Macro.findOne({
-      _id: req.params.id,
-      $or: [
-        { createdBy: userId },
-        { isPublic: true },
-        { 'sharedWith.userId': userId }
-      ]
-    });
+    let macro;
+
+    if (isAdmin) {
+      // Admins can access any macro
+      macro = await Macro.findById(req.params.id);
+    } else {
+      // Regular users: find macro they have access to
+      macro = await Macro.findOne({
+        _id: req.params.id,
+        $or: [
+          { createdBy: userId },
+          { isPublic: true },
+          { 'sharedWith.userId': userId }
+        ]
+      });
+    }
 
     if (!macro) {
       return res.status(404).json({ message: 'Macro not found' });
     }
 
     const isOwner = macro.createdBy.toString() === userId.toString();
+    // Admins can edit like owners (but don't become the owner)
+    const canEditContent = isOwner || isAdmin;
 
-    // Only owner can update content (title, feedback, categories, scorecardData)
-    if (isOwner) {
-      // Check if new title conflicts with another macro
+    // Owner or admin can update content (title, feedback, categories, scorecardData)
+    if (canEditContent) {
+      // Check if new title conflicts with another macro (check against original creator's macros)
       if (title && title.trim().toLowerCase() !== macro.title.toLowerCase()) {
         const existingMacro = await Macro.findOne({
-          createdBy: userId,
+          createdBy: macro.createdBy, // Check against original creator, not current user
           _id: { $ne: macro._id },
           title: { $regex: `^${title.trim()}$`, $options: 'i' }
         });
@@ -225,8 +302,8 @@ exports.updateMacro = async (req, res) => {
 
     // Handle sharedWith updates
     if (sharedWith !== undefined && Array.isArray(sharedWith)) {
-      if (isOwner) {
-        // Owner can fully replace sharedWith, need to handle cascade removal
+      if (isOwner || isAdmin) {
+        // Owner or admin can fully replace sharedWith, need to handle cascade removal
         const oldUserIds = macro.sharedWith.map(s => s.userId.toString());
         const newUserIds = sharedWith;
 
@@ -265,10 +342,10 @@ exports.updateMacro = async (req, res) => {
           if (existing) {
             newSharedWith.push(existing);
           } else if (!allRemovedIds.includes(uid)) {
-            // New user being added by owner
+            // New user being added by owner/admin (use macro creator as addedBy)
             newSharedWith.push({
               userId: new mongoose.Types.ObjectId(uid),
-              addedBy: userId
+              addedBy: isOwner ? userId : macro.createdBy
             });
           }
         });
@@ -295,6 +372,11 @@ exports.updateMacro = async (req, res) => {
     macroObj.isOwner = isOwner;
     macroObj.isSharedWithMe = !isOwner && !macro.isPublic &&
       macro.sharedWith.some(s => s.userId.toString() === userId.toString());
+
+    // Admin flag for frontend
+    if (isAdmin && !isOwner) {
+      macroObj.canAdminEdit = true;
+    }
 
     res.json(macroObj);
   } catch (error) {
@@ -448,6 +530,64 @@ exports.getQAGradersForSharing = async (req, res) => {
     res.json(graders);
   } catch (error) {
     logger.error('Error fetching QA graders:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get QA graders with macro counts (admin only)
+// @route   GET /api/qa/macros/graders-with-counts
+// @access  Private (admin only)
+exports.getQAGradersWithMacroCounts = async (req, res) => {
+  try {
+    const userEmail = req.user.email;
+
+    // Only admins can access this endpoint
+    if (!isMacroAdmin(userEmail)) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    const User = require('../models/User');
+    const QAAllowedEmail = require('../models/QAAllowedEmail');
+
+    // Get all allowed QA emails from database
+    const allowedEmails = await QAAllowedEmail.find({}).select('email');
+    const emailList = allowedEmails.map(e => e.email.toLowerCase());
+
+    // Get users who are QA graders
+    const graders = await User.find({
+      email: { $in: emailList }
+    }).select('_id name email');
+
+    // Get macro counts per creator
+    const macroCounts = await Macro.aggregate([
+      {
+        $group: {
+          _id: '$createdBy',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Create a map of userId -> count
+    const countMap = {};
+    macroCounts.forEach(item => {
+      countMap[item._id.toString()] = item.count;
+    });
+
+    // Add counts to graders
+    const gradersWithCounts = graders.map(grader => ({
+      _id: grader._id,
+      name: grader.name,
+      email: grader.email,
+      macroCount: countMap[grader._id.toString()] || 0
+    }));
+
+    // Sort by name
+    gradersWithCounts.sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json(gradersWithCounts);
+  } catch (error) {
+    logger.error('Error fetching QA graders with counts:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
