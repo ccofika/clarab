@@ -73,7 +73,10 @@ const {
   copyLastWeekSetup,
   getStaleTickets,
   getScoreComparison,
-  parseExcelAssignments
+  parseExcelAssignments,
+  // Grade button click tracking
+  recordGradeClick,
+  getWeeklyGradeClicks
 } = require('../controllers/qaController');
 
 const {
@@ -437,6 +440,16 @@ router.get('/active-overview/score-comparison', allAgentsAdminAuth, getScoreComp
 
 // Import agent assignments from Excel file
 router.post('/active-overview/import-excel', allAgentsAdminAuth, excelUpload.single('file'), parseExcelAssignments);
+
+// ============================================
+// GRADE BUTTON CLICK TRACKING
+// ============================================
+
+// Record a grade button click (any QA user)
+router.post('/grade-clicks', recordGradeClick);
+
+// Get weekly grade click counts (admin only, for Active Overview)
+router.get('/grade-clicks/weekly', allAgentsAdminAuth, getWeeklyGradeClicks);
 
 // ============================================
 // STATISTICS ROUTES (Filip & Nevena only)

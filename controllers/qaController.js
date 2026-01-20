@@ -3334,3 +3334,86 @@ exports.parseExcelAssignments = async (req, res) => {
     res.status(500).json({ message: 'Error parsing Excel file: ' + error.message });
   }
 };
+
+// ============================================
+// GRADE BUTTON CLICK TRACKING
+// ============================================
+
+// @desc    Record a grade button click
+// @route   POST /api/qa/grade-clicks
+// @access  Private
+exports.recordGradeClick = async (req, res) => {
+  try {
+    const GradeButtonClick = require('../models/GradeButtonClick');
+    const userId = req.user._id;
+    const { agentId, source } = req.body;
+
+    if (!agentId) {
+      return res.status(400).json({ message: 'Agent ID is required' });
+    }
+
+    await GradeButtonClick.create({
+      userId,
+      agentId,
+      source: source || 'dashboard',
+      clickedAt: new Date()
+    });
+
+    res.status(201).json({ message: 'Click recorded' });
+  } catch (error) {
+    logger.error('Error recording grade click:', error);
+    res.status(500).json({ message: 'Failed to record click' });
+  }
+};
+
+// @desc    Get weekly grade click counts per user (for Active Overview)
+// @route   GET /api/qa/grade-clicks/weekly
+// @access  Private (Admin only)
+exports.getWeeklyGradeClicks = async (req, res) => {
+  try {
+    const GradeButtonClick = require('../models/GradeButtonClick');
+
+    // Calculate Monday of current week (using same logic as assignments)
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const mondayOffset = dayOfWeek === 0 ? -6 : 1 - dayOfWeek;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+
+    // Sunday end of week
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    sunday.setHours(23, 59, 59, 999);
+
+    // Aggregate clicks per user for this week
+    const clickCounts = await GradeButtonClick.aggregate([
+      {
+        $match: {
+          clickedAt: { $gte: monday, $lte: sunday }
+        }
+      },
+      {
+        $group: {
+          _id: '$userId',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Convert to a map for easy lookup
+    const countMap = {};
+    clickCounts.forEach(item => {
+      countMap[item._id.toString()] = item.count;
+    });
+
+    res.json({
+      weekStart: monday,
+      weekEnd: sunday,
+      counts: countMap
+    });
+  } catch (error) {
+    logger.error('Error fetching weekly grade clicks:', error);
+    res.status(500).json({ message: 'Failed to fetch grade click counts' });
+  }
+};
