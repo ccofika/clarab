@@ -123,6 +123,181 @@ exports.getAgentIssues = async (req, res) => {
   }
 };
 
+// @desc    Get agent's performance history (last 3 weeks, not including current week)
+// @route   GET /api/qa/agents/:id/performance-history
+// @access  Private
+exports.getAgentPerformanceHistory = async (req, res) => {
+  try {
+    const agentId = req.params.id;
+    const userId = req.user._id;
+
+    const agent = await Agent.findById(agentId).select('name position');
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Calculate date ranges for last 3 weeks (not including current week)
+    const now = new Date();
+    const currentDay = now.getDay();
+    const daysToMonday = currentDay === 0 ? 6 : currentDay - 1;
+
+    // Start of current week (Monday 00:00:00)
+    const startOfCurrentWeek = new Date(now);
+    startOfCurrentWeek.setDate(now.getDate() - daysToMonday);
+    startOfCurrentWeek.setHours(0, 0, 0, 0);
+
+    // End of week -1 (Sunday 23:59:59 of last week)
+    const endOfWeekMinus1 = new Date(startOfCurrentWeek);
+    endOfWeekMinus1.setMilliseconds(-1);
+
+    // Start of week -1
+    const startOfWeekMinus1 = new Date(startOfCurrentWeek);
+    startOfWeekMinus1.setDate(startOfWeekMinus1.getDate() - 7);
+
+    // Start of week -2
+    const startOfWeekMinus2 = new Date(startOfWeekMinus1);
+    startOfWeekMinus2.setDate(startOfWeekMinus2.getDate() - 7);
+
+    // Start of week -3
+    const startOfWeekMinus3 = new Date(startOfWeekMinus2);
+    startOfWeekMinus3.setDate(startOfWeekMinus3.getDate() - 7);
+
+    // Fetch all archived tickets for this agent from the user in the last 3 weeks
+    const tickets = await Ticket.find({
+      agent: agentId,
+      createdBy: userId,
+      isArchived: true,
+      gradedDate: { $gte: startOfWeekMinus3, $lt: startOfCurrentWeek }
+    })
+    .select('ticketId qualityScorePercent categories feedback notes gradedDate status')
+    .sort({ gradedDate: -1 });
+
+    // Helper to determine which week a date belongs to
+    const getWeekNumber = (date) => {
+      const d = new Date(date);
+      if (d >= startOfWeekMinus1 && d < startOfCurrentWeek) return 1;
+      if (d >= startOfWeekMinus2 && d < startOfWeekMinus1) return 2;
+      if (d >= startOfWeekMinus3 && d < startOfWeekMinus2) return 3;
+      return null;
+    };
+
+    // Format date range for display
+    const formatDateRange = (start, end) => {
+      const options = { month: 'short', day: 'numeric' };
+      return `${start.toLocaleDateString('en-US', options)} - ${end.toLocaleDateString('en-US', options)}`;
+    };
+
+    // Group tickets by week
+    const weeklyData = {
+      1: {
+        label: 'Last Week',
+        dateRange: formatDateRange(startOfWeekMinus1, endOfWeekMinus1),
+        tickets: [],
+        totalScore: 0,
+        gradedCount: 0
+      },
+      2: {
+        label: '2 Weeks Ago',
+        dateRange: formatDateRange(startOfWeekMinus2, new Date(startOfWeekMinus1.getTime() - 1)),
+        tickets: [],
+        totalScore: 0,
+        gradedCount: 0
+      },
+      3: {
+        label: '3 Weeks Ago',
+        dateRange: formatDateRange(startOfWeekMinus3, new Date(startOfWeekMinus2.getTime() - 1)),
+        tickets: [],
+        totalScore: 0,
+        gradedCount: 0
+      }
+    };
+
+    tickets.forEach(ticket => {
+      const weekNum = getWeekNumber(ticket.gradedDate);
+      if (weekNum && weeklyData[weekNum]) {
+        weeklyData[weekNum].tickets.push({
+          _id: ticket._id,
+          ticketId: ticket.ticketId,
+          score: ticket.qualityScorePercent,
+          categories: ticket.categories || [],
+          gradedDate: ticket.gradedDate,
+          feedbackPreview: ticket.feedback ? ticket.feedback.replace(/<[^>]*>/g, '').substring(0, 300) : null,
+          notesPreview: ticket.notes ? ticket.notes.replace(/<[^>]*>/g, '').substring(0, 200) : null
+        });
+        if (ticket.qualityScorePercent !== null && ticket.qualityScorePercent !== undefined) {
+          weeklyData[weekNum].totalScore += ticket.qualityScorePercent;
+          weeklyData[weekNum].gradedCount++;
+        }
+      }
+    });
+
+    // Calculate averages
+    const weeks = [1, 2, 3].map(weekNum => {
+      const data = weeklyData[weekNum];
+      const avgScore = data.gradedCount > 0
+        ? Math.round((data.totalScore / data.gradedCount) * 10) / 10
+        : null;
+      return {
+        weekNumber: weekNum,
+        label: data.label,
+        dateRange: data.dateRange,
+        ticketCount: data.tickets.length,
+        gradedCount: data.gradedCount,
+        avgScore,
+        tickets: data.tickets
+      };
+    });
+
+    // Calculate trend (comparing week 1 vs week 2, or week 1 vs week 3 if week 2 has no data)
+    let trend = 'stable';
+    let trendValue = 0;
+    const week1Avg = weeks[0].avgScore;
+    const week2Avg = weeks[1].avgScore;
+    const week3Avg = weeks[2].avgScore;
+
+    if (week1Avg !== null) {
+      const compareAvg = week2Avg !== null ? week2Avg : week3Avg;
+      if (compareAvg !== null) {
+        trendValue = Math.round((week1Avg - compareAvg) * 10) / 10;
+        if (trendValue > 2) trend = 'improving';
+        else if (trendValue < -2) trend = 'declining';
+      }
+    }
+
+    // Calculate overall average across all 3 weeks
+    const totalGraded = weeks.reduce((sum, w) => sum + w.gradedCount, 0);
+    const totalScore = weeks.reduce((sum, w) => sum + (w.avgScore || 0) * w.gradedCount, 0);
+    const overallAvg = totalGraded > 0 ? Math.round((totalScore / totalGraded) * 10) / 10 : null;
+
+    // Get most common categories
+    const categoryCount = {};
+    tickets.forEach(t => {
+      (t.categories || []).forEach(cat => {
+        categoryCount[cat] = (categoryCount[cat] || 0) + 1;
+      });
+    });
+    const topCategories = Object.entries(categoryCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([name, count]) => ({ name, count }));
+
+    res.json({
+      agent: { _id: agent._id, name: agent.name, position: agent.position },
+      summary: {
+        totalTickets: tickets.length,
+        overallAvg,
+        trend,
+        trendValue,
+        topCategories
+      },
+      weeks
+    });
+  } catch (error) {
+    logger.error('Error fetching agent performance history:', error);
+    res.status(500).json({ message: 'Failed to fetch performance history', error: error.message });
+  }
+};
+
 // @desc    Create new agent (globally unique)
 // @route   POST /api/qa/agents
 // @access  Private

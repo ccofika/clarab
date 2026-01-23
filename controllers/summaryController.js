@@ -369,6 +369,103 @@ const getAllSummaries = async (req, res) => {
 };
 
 /**
+ * Get all summaries from ALL users (for "All Summaries" view)
+ * GET /api/qa/summaries/all
+ */
+const getAllSummariesFromAllUsers = async (req, res) => {
+  try {
+    const { page = 1, limit = 50, shift, graderId } = req.query;
+
+    const query = {};
+
+    // Optional shift filter
+    if (shift && shift !== 'all') {
+      query.shift = shift;
+    }
+
+    // Optional grader (user) filter
+    if (graderId && graderId !== 'all') {
+      query.userId = graderId;
+    }
+
+    const total = await Summary.countDocuments(query);
+    const summaries = await Summary.find(query)
+      .populate('userId', 'name email')
+      .sort({ date: -1, shift: 1 }) // Sort by date DESC, then shift (Afternoon before Morning alphabetically, but we want Morning first)
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    // Re-sort to ensure Morning comes before Afternoon for same date
+    const sortedSummaries = summaries.sort((a, b) => {
+      const dateA = new Date(a.date).getTime();
+      const dateB = new Date(b.date).getTime();
+      if (dateB !== dateA) return dateB - dateA; // Date descending
+      // For same date, Morning before Afternoon
+      if (a.shift === 'Morning' && b.shift === 'Afternoon') return -1;
+      if (a.shift === 'Afternoon' && b.shift === 'Morning') return 1;
+      return 0;
+    });
+
+    res.json({
+      summaries: sortedSummaries,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Get all summaries error:', error);
+    res.status(500).json({ message: 'Failed to fetch all summaries', error: error.message });
+  }
+};
+
+/**
+ * Get list of graders who have summaries (for filter dropdown)
+ * GET /api/qa/summaries/graders
+ */
+const getSummaryGraders = async (req, res) => {
+  try {
+    const graders = await Summary.aggregate([
+      {
+        $group: {
+          _id: '$userId',
+          summaryCount: { $sum: 1 }
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      {
+        $unwind: '$user'
+      },
+      {
+        $project: {
+          _id: 1,
+          name: '$user.name',
+          email: '$user.email',
+          summaryCount: 1
+        }
+      },
+      {
+        $sort: { name: 1 }
+      }
+    ]);
+
+    res.json({ graders });
+  } catch (error) {
+    console.error('Get summary graders error:', error);
+    res.status(500).json({ message: 'Failed to fetch graders', error: error.message });
+  }
+};
+
+/**
  * Get dates that have summaries (for calendar highlighting)
  * GET /api/qa/summaries/dates
  */
@@ -489,6 +586,8 @@ const deleteSummary = async (req, res) => {
 module.exports = {
   generateSummary,
   getAllSummaries,
+  getAllSummariesFromAllUsers,
+  getSummaryGraders,
   getSummaryDates,
   getSummary,
   updateSummary,

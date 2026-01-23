@@ -25,6 +25,7 @@ const {
   getAllAgents,
   getAgent,
   getAgentIssues,
+  getAgentPerformanceHistory,
   createAgent,
   updateAgent,
   deleteAgent,
@@ -100,6 +101,8 @@ const {
   // Summary controllers
   generateSummary,
   getAllSummaries,
+  getAllSummariesFromAllUsers,
+  getSummaryGraders,
   getSummaryDates,
   getSummary,
   updateSummary,
@@ -238,6 +241,9 @@ router.route('/agents/:id')
 // Get agent's unresolved issues
 router.get('/agents/:id/issues', getAgentIssues);
 
+// Get agent's performance history (last 3 weeks)
+router.get('/agents/:id/performance-history', getAgentPerformanceHistory);
+
 // ============================================
 // TICKET ROUTES
 // ============================================
@@ -310,6 +316,8 @@ router.route('/summaries')
   .get(getAllSummaries)
   .post(generateSummary);
 
+router.get('/summaries/all', getAllSummariesFromAllUsers);
+router.get('/summaries/graders', getSummaryGraders);
 router.get('/summaries/dates', getSummaryDates);
 
 router.route('/summaries/:id')
