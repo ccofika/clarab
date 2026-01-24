@@ -77,7 +77,17 @@ const {
   parseExcelAssignments,
   // Grade button click tracking
   recordGradeClick,
-  getWeeklyGradeClicks
+  getWeeklyGradeClicks,
+  // Coaching
+  generateCoachingReport,
+  saveCoachingSession,
+  getCoachingSessions,
+  getCoachingSession,
+  updateCoachingSession,
+  deleteCoachingSession,
+  shareCoachingSession,
+  unshareCoachingSession,
+  getQAGradersForCoaching
 } = require('../controllers/qaController');
 
 const {
@@ -120,7 +130,9 @@ const {
   recordMacroUsage,
   getMacroTickets,
   getQAGradersForSharing,
-  getQAGradersWithMacroCounts
+  getQAGradersWithMacroCounts,
+  getMacroAnalytics,
+  getMacroSuggestions
 } = require('../controllers/macroController');
 
 const {
@@ -320,6 +332,23 @@ router.get('/summaries/all', getAllSummariesFromAllUsers);
 router.get('/summaries/graders', getSummaryGraders);
 router.get('/summaries/dates', getSummaryDates);
 
+// Coaching Report (generate preview)
+router.get('/coaching/report/:agentId', generateCoachingReport);
+
+// Coaching Sessions CRUD
+router.get('/coaching/graders', getQAGradersForCoaching);
+router.route('/coaching/sessions')
+  .get(getCoachingSessions)
+  .post(saveCoachingSession);
+
+router.route('/coaching/sessions/:id')
+  .get(getCoachingSession)
+  .put(updateCoachingSession)
+  .delete(deleteCoachingSession);
+
+router.put('/coaching/sessions/:id/share', shareCoachingSession);
+router.delete('/coaching/sessions/:id/share/:sharedUserId', unshareCoachingSession);
+
 router.route('/summaries/:id')
   .get(getSummary)
   .put(updateSummary)
@@ -337,6 +366,12 @@ router.get('/macros/graders', getQAGradersForSharing);
 
 // Get QA graders with macro counts (admin only, for dropdown)
 router.get('/macros/graders-with-counts', getQAGradersWithMacroCounts);
+
+// Macro analytics
+router.get('/macros/analytics', getMacroAnalytics);
+
+// Macro suggestions based on categories
+router.get('/macros/suggestions', getMacroSuggestions);
 
 router.route('/macros')
   .get(getAllMacros)

@@ -1,10 +1,12 @@
 const Agent = require('../models/Agent');
 const Ticket = require('../models/Ticket');
+const CoachingSession = require('../models/CoachingSession');
 const logger = require('../utils/logger');
 const ExcelJS = require('exceljs');
 const {
   generateEmbedding,
-  cosineSimilarity
+  cosineSimilarity,
+  generateCoachingSuggestions
 } = require('../utils/openai');
 
 // ============================================
@@ -3590,5 +3592,526 @@ exports.getWeeklyGradeClicks = async (req, res) => {
   } catch (error) {
     logger.error('Error fetching weekly grade clicks:', error);
     res.status(500).json({ message: 'Failed to fetch grade click counts' });
+  }
+};
+
+// ============================================
+// COACHING REPORT
+// ============================================
+
+// @desc    Generate coaching report for an agent
+// @route   GET /api/qa/coaching/report/:agentId
+// @access  Private
+exports.generateCoachingReport = async (req, res) => {
+  try {
+    const { agentId } = req.params;
+    const { weeks = 4 } = req.query; // Default 4 weeks
+    const weeksNum = parseInt(weeks) || 4;
+
+    // Get agent info
+    const agent = await Agent.findById(agentId);
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    // Calculate date range
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - (weeksNum * 7));
+
+    // Calculate previous period for trend comparison
+    const prevEndDate = new Date(startDate);
+    prevEndDate.setDate(prevEndDate.getDate() - 1);
+    const prevStartDate = new Date(prevEndDate);
+    prevStartDate.setDate(prevStartDate.getDate() - (weeksNum * 7));
+
+    // Get tickets for current period (both active and archived, score < 90%)
+    const currentTickets = await Ticket.find({
+      agent: agentId,
+      gradedDate: { $gte: startDate, $lte: endDate },
+      qualityScorePercent: { $lt: 90, $ne: null }
+    })
+      .select('ticketId qualityScorePercent categories feedback notes gradedDate scorecardValues scorecardVariant')
+      .sort({ gradedDate: -1 })
+      .lean();
+
+    // Get all tickets for current period (for overall stats)
+    const allCurrentTickets = await Ticket.find({
+      agent: agentId,
+      gradedDate: { $gte: startDate, $lte: endDate },
+      qualityScorePercent: { $ne: null }
+    })
+      .select('qualityScorePercent scorecardValues')
+      .lean();
+
+    // Get previous period tickets for trend
+    const prevTickets = await Ticket.find({
+      agent: agentId,
+      gradedDate: { $gte: prevStartDate, $lte: prevEndDate },
+      qualityScorePercent: { $ne: null }
+    })
+      .select('qualityScorePercent')
+      .lean();
+
+    // Calculate overall average score for current period
+    const currentAvgScore = allCurrentTickets.length > 0
+      ? Math.round(allCurrentTickets.reduce((sum, t) => sum + t.qualityScorePercent, 0) / allCurrentTickets.length)
+      : null;
+
+    // Calculate previous period average
+    const prevAvgScore = prevTickets.length > 0
+      ? Math.round(prevTickets.reduce((sum, t) => sum + t.qualityScorePercent, 0) / prevTickets.length)
+      : null;
+
+    // Calculate trend
+    let trend = 'stable';
+    let trendValue = 0;
+    if (currentAvgScore !== null && prevAvgScore !== null) {
+      trendValue = currentAvgScore - prevAvgScore;
+      if (trendValue >= 3) trend = 'improving';
+      else if (trendValue <= -3) trend = 'declining';
+    }
+
+    // Group tickets by category to find top issue categories
+    const categoryMap = {};
+    currentTickets.forEach(ticket => {
+      (ticket.categories || []).forEach(cat => {
+        if (!categoryMap[cat]) {
+          categoryMap[cat] = { count: 0, totalScore: 0 };
+        }
+        categoryMap[cat].count += 1;
+        categoryMap[cat].totalScore += ticket.qualityScorePercent;
+      });
+    });
+
+    const topIssueCategories = Object.entries(categoryMap)
+      .map(([name, data]) => ({
+        name,
+        count: data.count,
+        avgScore: Math.round(data.totalScore / data.count)
+      }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 5);
+
+    // Calculate scorecard averages
+    const scorecardAverages = {};
+    const scorecardCounts = {};
+
+    allCurrentTickets.forEach(ticket => {
+      if (ticket.scorecardValues) {
+        Object.entries(ticket.scorecardValues).forEach(([key, value]) => {
+          if (value !== null && value !== undefined && value !== 4) { // Exclude N/A (4)
+            if (!scorecardAverages[key]) {
+              scorecardAverages[key] = 0;
+              scorecardCounts[key] = 0;
+            }
+            // Convert 0-3 to percentage (0=100%, 1=75%, 2=50%, 3=25%)
+            const scorePercent = (3 - value) / 3 * 100;
+            scorecardAverages[key] += scorePercent;
+            scorecardCounts[key] += 1;
+          }
+        });
+      }
+    });
+
+    // Calculate final averages and identify weaknesses
+    const scorecardAnalysis = Object.entries(scorecardAverages)
+      .map(([key, total]) => {
+        const avg = Math.round(total / scorecardCounts[key]);
+        // Convert snake_case to Title Case
+        const label = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        return {
+          key,
+          name: label,
+          avgScore: avg,
+          count: scorecardCounts[key]
+        };
+      })
+      .sort((a, b) => a.avgScore - b.avgScore); // Sort by lowest score first
+
+    const strengths = scorecardAnalysis.filter(s => s.avgScore >= 80);
+    const weaknesses = scorecardAnalysis.filter(s => s.avgScore < 80);
+
+    // Strip HTML helper
+    const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    // Prepare ticket examples for the report
+    const ticketExamples = currentTickets.map(t => ({
+      _id: t._id,
+      ticketId: t.ticketId,
+      score: t.qualityScorePercent,
+      categories: t.categories || [],
+      gradedDate: t.gradedDate,
+      feedbackPreview: stripHtml(t.feedback)?.substring(0, 200) || '',
+      notesPreview: stripHtml(t.notes)?.substring(0, 150) || ''
+    }));
+
+    // Group tickets by severity
+    const severityGroups = {
+      critical: ticketExamples.filter(t => t.score < 50),
+      bad: ticketExamples.filter(t => t.score >= 50 && t.score < 70),
+      moderate: ticketExamples.filter(t => t.score >= 70 && t.score < 90)
+    };
+
+    // Generate AI suggestions
+    let suggestedActions = [];
+    if (currentTickets.length > 0) {
+      try {
+        suggestedActions = await generateCoachingSuggestions({
+          agentName: agent.name,
+          avgScore: currentAvgScore,
+          trend: trend,
+          topIssueCategories: topIssueCategories,
+          scorecardWeaknesses: weaknesses.slice(0, 3),
+          ticketExamples: ticketExamples.slice(0, 5)
+        });
+      } catch (aiError) {
+        logger.error('Error generating AI suggestions:', aiError);
+        suggestedActions = ['Greška pri generisanju AI preporuka.'];
+      }
+    }
+
+    res.json({
+      agent: {
+        _id: agent._id,
+        name: agent.name,
+        position: agent.position,
+        team: agent.team
+      },
+      period: {
+        weeks: weeksNum,
+        startDate,
+        endDate
+      },
+      summary: {
+        totalTickets: allCurrentTickets.length,
+        ticketsWithIssues: currentTickets.length,
+        avgScore: currentAvgScore,
+        trend,
+        trendValue: trendValue > 0 ? `+${trendValue}` : `${trendValue}`,
+        prevPeriodAvg: prevAvgScore
+      },
+      topIssueCategories,
+      scorecardAnalysis: {
+        strengths,
+        weaknesses
+      },
+      severityGroups,
+      ticketExamples,
+      suggestedActions,
+      generatedAt: new Date()
+    });
+  } catch (error) {
+    logger.error('Error generating coaching report:', error);
+    res.status(500).json({ message: 'Failed to generate coaching report' });
+  }
+};
+
+// ============================================
+// COACHING SESSION CONTROLLERS
+// ============================================
+
+// @desc    Save a coaching session
+// @route   POST /api/qa/coaching/sessions
+// @access  Private
+exports.saveCoachingSession = async (req, res) => {
+  try {
+    const { agentId, period, reportData } = req.body;
+    const userId = req.user._id;
+
+    // Verify agent exists
+    const agent = await Agent.findById(agentId);
+    if (!agent) {
+      return res.status(404).json({ message: 'Agent not found' });
+    }
+
+    const session = new CoachingSession({
+      agent: agentId,
+      generatedBy: userId,
+      period,
+      reportData,
+      status: 'new',
+      generatedAt: new Date()
+    });
+
+    await session.save();
+
+    // Populate agent and user info
+    await session.populate('agent', 'name position team');
+    await session.populate('generatedBy', 'name email');
+
+    res.status(201).json(session);
+  } catch (error) {
+    logger.error('Error saving coaching session:', error);
+    res.status(500).json({ message: 'Failed to save coaching session' });
+  }
+};
+
+// @desc    Get all coaching sessions for user (created by or shared with)
+// @route   GET /api/qa/coaching/sessions
+// @access  Private
+exports.getCoachingSessions = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { agentId, status, page = 1, limit = 20 } = req.query;
+
+    // Build query - sessions created by user OR shared with user
+    const query = {
+      $or: [
+        { generatedBy: userId },
+        { 'sharedWith.userId': userId }
+      ]
+    };
+
+    if (agentId) {
+      query.agent = agentId;
+    }
+
+    if (status) {
+      query.status = status;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const [sessions, total] = await Promise.all([
+      CoachingSession.find(query)
+        .populate('agent', 'name position team')
+        .populate('generatedBy', 'name email')
+        .populate('sharedWith.userId', 'name email')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      CoachingSession.countDocuments(query)
+    ]);
+
+    // Add isOwner and isSharedWithMe flags
+    const sessionsWithOwnership = sessions.map(session => ({
+      ...session,
+      isOwner: session.generatedBy._id.toString() === userId.toString(),
+      isSharedWithMe: session.sharedWith?.some(s => s.userId?._id?.toString() === userId.toString())
+    }));
+
+    res.json({
+      sessions: sessionsWithOwnership,
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        pages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching coaching sessions:', error);
+    res.status(500).json({ message: 'Failed to fetch coaching sessions' });
+  }
+};
+
+// @desc    Get single coaching session
+// @route   GET /api/qa/coaching/sessions/:id
+// @access  Private
+exports.getCoachingSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const session = await CoachingSession.findById(id)
+      .populate('agent', 'name position team')
+      .populate('generatedBy', 'name email')
+      .populate('sharedWith.userId', 'name email');
+
+    if (!session) {
+      return res.status(404).json({ message: 'Coaching session not found' });
+    }
+
+    // Check access - owner or shared with user
+    const isOwner = session.generatedBy._id.toString() === userId.toString();
+    const isSharedWithUser = session.sharedWith?.some(s => s.userId?._id?.toString() === userId.toString());
+
+    if (!isOwner && !isSharedWithUser) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
+
+    res.json({
+      ...session.toObject(),
+      isOwner,
+      isSharedWithMe: isSharedWithUser && !isOwner
+    });
+  } catch (error) {
+    logger.error('Error fetching coaching session:', error);
+    res.status(500).json({ message: 'Failed to fetch coaching session' });
+  }
+};
+
+// @desc    Update coaching session (notes, status)
+// @route   PUT /api/qa/coaching/sessions/:id
+// @access  Private
+exports.updateCoachingSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { notes, status } = req.body;
+    const userId = req.user._id;
+
+    const session = await CoachingSession.findById(id);
+
+    if (!session) {
+      return res.status(404).json({ message: 'Coaching session not found' });
+    }
+
+    // Only owner can update
+    if (session.generatedBy.toString() !== userId.toString()) {
+      return res.status(403).json({ message: 'Only the owner can update this session' });
+    }
+
+    if (notes !== undefined) session.notes = notes;
+    if (status !== undefined) session.status = status;
+
+    await session.save();
+    await session.populate('agent', 'name position team');
+    await session.populate('generatedBy', 'name email');
+    await session.populate('sharedWith.agent', 'name position team');
+
+    res.json(session);
+  } catch (error) {
+    logger.error('Error updating coaching session:', error);
+    res.status(500).json({ message: 'Failed to update coaching session' });
+  }
+};
+
+// @desc    Delete coaching session
+// @route   DELETE /api/qa/coaching/sessions/:id
+// @access  Private
+exports.deleteCoachingSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user._id;
+
+    const session = await CoachingSession.findById(id);
+
+    if (!session) {
+      return res.status(404).json({ message: 'Coaching session not found' });
+    }
+
+    // Only owner can delete
+    if (session.generatedBy.toString() !== userId.toString()) {
+      return res.status(403).json({ message: 'Only the owner can delete this session' });
+    }
+
+    await session.deleteOne();
+
+    res.json({ message: 'Coaching session deleted' });
+  } catch (error) {
+    logger.error('Error deleting coaching session:', error);
+    res.status(500).json({ message: 'Failed to delete coaching session' });
+  }
+};
+
+// @desc    Share coaching session with QA graders
+// @route   PUT /api/qa/coaching/sessions/:id/share
+// @access  Private
+exports.shareCoachingSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userIds } = req.body; // Array of user IDs to share with
+    const userId = req.user._id;
+
+    const session = await CoachingSession.findById(id);
+
+    if (!session) {
+      return res.status(404).json({ message: 'Coaching session not found' });
+    }
+
+    // Only owner can share
+    if (session.generatedBy.toString() !== userId.toString()) {
+      return res.status(403).json({ message: 'Only the owner can share this session' });
+    }
+
+    // Replace sharedWith with new list of users
+    session.sharedWith = userIds.map(uid => ({
+      userId: uid,
+      sharedAt: new Date()
+    }));
+
+    await session.save();
+
+    await session.populate('agent', 'name position team');
+    await session.populate('generatedBy', 'name email');
+    await session.populate('sharedWith.userId', 'name email');
+
+    res.json({
+      ...session.toObject(),
+      isOwner: true
+    });
+  } catch (error) {
+    logger.error('Error sharing coaching session:', error);
+    res.status(500).json({ message: 'Failed to share coaching session' });
+  }
+};
+
+// @desc    Remove user from shared list
+// @route   DELETE /api/qa/coaching/sessions/:id/share/:sharedUserId
+// @access  Private
+exports.unshareCoachingSession = async (req, res) => {
+  try {
+    const { id, sharedUserId } = req.params;
+    const userId = req.user._id;
+
+    const session = await CoachingSession.findById(id);
+
+    if (!session) {
+      return res.status(404).json({ message: 'Coaching session not found' });
+    }
+
+    // Only owner can unshare
+    if (session.generatedBy.toString() !== userId.toString()) {
+      return res.status(403).json({ message: 'Only the owner can modify sharing' });
+    }
+
+    session.sharedWith = session.sharedWith.filter(
+      share => share.userId.toString() !== sharedUserId
+    );
+
+    await session.save();
+
+    await session.populate('agent', 'name position team');
+    await session.populate('generatedBy', 'name email');
+    await session.populate('sharedWith.userId', 'name email');
+
+    res.json({
+      ...session.toObject(),
+      isOwner: true
+    });
+  } catch (error) {
+    logger.error('Error unsharing coaching session:', error);
+    res.status(500).json({ message: 'Failed to unshare coaching session' });
+  }
+};
+
+// @desc    Get QA graders for sharing coaching sessions
+// @route   GET /api/qa/coaching/graders
+// @access  Private
+exports.getQAGradersForCoaching = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const User = require('../models/User');
+    const QAAllowedEmail = require('../models/QAAllowedEmail');
+
+    // Get all allowed QA emails from database
+    const allowedEmails = await QAAllowedEmail.find({}).select('email');
+    const emailList = allowedEmails.map(e => e.email.toLowerCase());
+
+    // Get users who are QA graders (excluding current user)
+    const graders = await User.find({
+      email: { $in: emailList },
+      _id: { $ne: userId }
+    }).select('_id name email').sort({ name: 1 });
+
+    res.json(graders);
+  } catch (error) {
+    logger.error('Error fetching QA graders for coaching:', error);
+    res.status(500).json({ message: 'Failed to fetch QA graders' });
   }
 };

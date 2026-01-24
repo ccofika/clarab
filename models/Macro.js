@@ -55,6 +55,10 @@ const macroSchema = new mongoose.Schema({
       ref: 'Ticket'
     },
     ticketNumber: String,  // e.g., "INC123456"
+    usedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
     usedAt: {
       type: Date,
       default: Date.now

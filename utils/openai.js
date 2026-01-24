@@ -640,6 +640,86 @@ Napiši kratak sažetak za ovog agenta. ${allPerfect ? 'Svi tiketi su 100%.' : '
   }
 };
 
+/**
+ * Generate coaching suggested actions for an agent based on their performance data
+ * @param {Object} agentData - Agent performance data
+ * @returns {Promise<Array>} - Array of suggested action strings
+ */
+const generateCoachingSuggestions = async (agentData) => {
+  try {
+    const { agentName, avgScore, trend, topIssueCategories, scorecardWeaknesses, ticketExamples } = agentData;
+
+    const systemPrompt = `Ti si QA coaching asistent. Na osnovu performance podataka agenta, generiši 3-5 KONKRETNIH i AKCIONABILNIH preporuka za poboljšanje.
+
+PRAVILA:
+- Piši na SRPSKOM jeziku
+- Svaka preporuka treba da bude konkretna akcija koju agent može preduzeti
+- Koristi podatke iz scorecard weakness-a i kategorija sa najviše problema
+- Ne koristi generičke savete - budi specifičan na osnovu podataka
+- Termini vezani za platformu ostaju na engleskom (KYC, ACP, deposit, withdrawal, etc.)
+- Format: Kratka rečenica, direktna i jasna
+
+PRIMERI DOBRIH PREPORUKA:
+- "Proći kroz training materijal za Crypto Withdrawals - fokus na blockchain confirmation times"
+- "Uvežbati korišćenje ACP-a za proveru deposit statusa pre odgovora korisniku"
+- "Proći refresher za VIP program benefite sa seniorom ili TL-om"
+- "Obratiti pažnju na opening message - pozdrav mora biti personalizovan"`;
+
+    const userPrompt = `Agent: ${agentName}
+Prosečan score: ${avgScore}%
+Trend: ${trend}
+
+Kategorije sa najviše problema:
+${topIssueCategories.map(c => `- ${c.name}: ${c.count} tiketa`).join('\n')}
+
+Scorecard slabosti (najniže ocene):
+${scorecardWeaknesses.map(s => `- ${s.name}: ${s.avgScore}%`).join('\n')}
+
+Primeri tiketa sa greškama:
+${ticketExamples.slice(0, 3).map(t => `- Score ${t.score}%, Kategorije: ${t.categories.join(', ')}, Feedback: ${t.feedbackPreview}`).join('\n')}
+
+Generiši 3-5 konkretnih preporuka za ovog agenta. Odgovori SAMO sa JSON array string-ova, bez dodatnog teksta.
+Primer formata: ["Preporuka 1", "Preporuka 2", "Preporuka 3"]`;
+
+    const response = await openai.chat.completions.create({
+      model: AI_MODEL,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      max_tokens: 5000
+    });
+
+    const content = response.choices[0].message.content?.trim();
+    console.log('[Coaching AI] Response content:', content?.substring(0, 200));
+
+    if (!content) {
+      console.log('[Coaching AI] Empty content received');
+      return ['Nema dovoljno podataka za generisanje preporuka.'];
+    }
+
+    // Parse JSON response
+    try {
+      let jsonStr = content;
+      if (content.includes('```json')) {
+        jsonStr = content.split('```json')[1].split('```')[0].trim();
+      } else if (content.includes('```')) {
+        jsonStr = content.split('```')[1].split('```')[0].trim();
+      }
+
+      const suggestions = JSON.parse(jsonStr);
+      return Array.isArray(suggestions) ? suggestions : [content];
+    } catch (parseError) {
+      // If JSON parsing fails, return the content as a single suggestion
+      return [content];
+    }
+  } catch (error) {
+    console.error('[Coaching AI] Error generating suggestions:', error.message);
+    console.error('[Coaching AI] Full error:', error);
+    return ['Greška pri generisanju preporuka. Pokušajte ponovo.'];
+  }
+};
+
 module.exports = {
   generateEmbedding,
   generateElementEmbedding,
@@ -649,5 +729,6 @@ module.exports = {
   aiSearchAssistant,
   qaAssistant,
   summarizeTicketIssue,
-  generateAgentSummary
+  generateAgentSummary,
+  generateCoachingSuggestions
 };

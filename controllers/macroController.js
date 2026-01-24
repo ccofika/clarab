@@ -441,6 +441,7 @@ exports.recordMacroUsage = async (req, res) => {
       macro.usedInTickets.push({
         ticketId,
         ticketNumber: ticketNumber || '',
+        usedBy: userId,
         usedAt: new Date()
       });
     }
@@ -588,6 +589,299 @@ exports.getQAGradersWithMacroCounts = async (req, res) => {
     res.json(gradersWithCounts);
   } catch (error) {
     logger.error('Error fetching QA graders with counts:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get macro analytics data
+// @route   GET /api/qa/macros/analytics
+// @access  Private
+exports.getMacroAnalytics = async (req, res) => {
+  try {
+    const Ticket = require('../models/Ticket');
+    const User = require('../models/User');
+    const QAAllowedEmail = require('../models/QAAllowedEmail');
+
+    // Get date for "this week" calculation
+    const now = new Date();
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() - 7);
+
+    // 1. Most used macros (overall) - top 10
+    const mostUsedOverall = await Macro.find({ usageCount: { $gt: 0 } })
+      .select('title usageCount categories createdBy lastUsedAt')
+      .populate('createdBy', 'name')
+      .sort({ usageCount: -1 })
+      .limit(10)
+      .lean();
+
+    // 2. Most used macros this week - aggregate from usedInTickets
+    const thisWeekUsage = await Macro.aggregate([
+      { $unwind: '$usedInTickets' },
+      { $match: { 'usedInTickets.usedAt': { $gte: startOfWeek } } },
+      {
+        $group: {
+          _id: '$_id',
+          title: { $first: '$title' },
+          weeklyCount: { $sum: 1 },
+          categories: { $first: '$categories' }
+        }
+      },
+      { $sort: { weeklyCount: -1 } },
+      { $limit: 10 }
+    ]);
+
+    // 3. Usage by grader (who is using macros)
+    const usageByGrader = await Macro.aggregate([
+      { $unwind: '$usedInTickets' },
+      { $match: { 'usedInTickets.usedBy': { $exists: true, $ne: null } } },
+      {
+        $group: {
+          _id: '$usedInTickets.usedBy',
+          totalUsage: { $sum: 1 },
+          uniqueMacros: { $addToSet: '$_id' }
+        }
+      },
+      {
+        $project: {
+          _id: 1,
+          totalUsage: 1,
+          uniqueMacrosCount: { $size: '$uniqueMacros' }
+        }
+      },
+      { $sort: { totalUsage: -1 } }
+    ]);
+
+    // Populate grader names
+    const graderIds = usageByGrader.map(g => g._id);
+    const graders = await User.find({ _id: { $in: graderIds } }).select('name email').lean();
+    const graderMap = {};
+    graders.forEach(g => { graderMap[g._id.toString()] = g; });
+
+    const usageByGraderWithNames = usageByGrader.map(g => ({
+      graderId: g._id,
+      graderName: graderMap[g._id.toString()]?.name || 'Unknown',
+      totalUsage: g.totalUsage,
+      uniqueMacrosCount: g.uniqueMacrosCount
+    }));
+
+    // 4. Usage by category
+    const usageByCategory = await Macro.aggregate([
+      { $match: { usageCount: { $gt: 0 }, categories: { $exists: true, $ne: [] } } },
+      { $unwind: '$categories' },
+      {
+        $group: {
+          _id: '$categories',
+          totalUsage: { $sum: '$usageCount' },
+          macroCount: { $sum: 1 }
+        }
+      },
+      { $sort: { totalUsage: -1 } },
+      { $limit: 15 }
+    ]);
+
+    // 5. Macro effectiveness (avg score of tickets using each macro)
+    const macrosWithUsage = await Macro.find({ 'usedInTickets.0': { $exists: true } })
+      .select('_id title usedInTickets usageCount')
+      .lean();
+
+    const effectiveness = [];
+    for (const macro of macrosWithUsage.slice(0, 20)) { // Top 20 to limit queries
+      const ticketIds = macro.usedInTickets.map(t => t.ticketId).filter(Boolean);
+      if (ticketIds.length > 0) {
+        const ticketStats = await Ticket.aggregate([
+          { $match: { _id: { $in: ticketIds }, qualityScorePercent: { $ne: null } } },
+          {
+            $group: {
+              _id: null,
+              avgScore: { $avg: '$qualityScorePercent' },
+              ticketCount: { $sum: 1 }
+            }
+          }
+        ]);
+
+        if (ticketStats.length > 0 && ticketStats[0].ticketCount > 0) {
+          effectiveness.push({
+            macroId: macro._id,
+            title: macro.title,
+            avgScore: Math.round(ticketStats[0].avgScore),
+            ticketCount: ticketStats[0].ticketCount,
+            usageCount: macro.usageCount
+          });
+        }
+      }
+    }
+    effectiveness.sort((a, b) => b.usageCount - a.usageCount);
+
+    // 6. Calculate overall stats
+    const totalMacros = await Macro.countDocuments();
+    const totalUsage = await Macro.aggregate([
+      { $group: { _id: null, total: { $sum: '$usageCount' } } }
+    ]);
+    const avgUsagePerMacro = totalMacros > 0
+      ? Math.round((totalUsage[0]?.total || 0) / totalMacros)
+      : 0;
+
+    // 7. Categories that rarely use macros (opportunity)
+    // Get all categories from recent tickets
+    const recentCategories = await Ticket.aggregate([
+      { $match: { createdAt: { $gte: startOfWeek } } },
+      { $unwind: '$categories' },
+      { $group: { _id: '$categories', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 20 }
+    ]);
+
+    // Find categories with low macro usage
+    const categoryMacroUsage = {};
+    usageByCategory.forEach(c => { categoryMacroUsage[c._id] = c.totalUsage; });
+
+    const lowMacroCategories = recentCategories
+      .filter(c => !categoryMacroUsage[c._id] || categoryMacroUsage[c._id] < 5)
+      .slice(0, 5);
+
+    res.json({
+      summary: {
+        totalMacros,
+        totalUsage: totalUsage[0]?.total || 0,
+        avgUsagePerMacro
+      },
+      mostUsedOverall: mostUsedOverall.map(m => ({
+        _id: m._id,
+        title: m.title,
+        usageCount: m.usageCount,
+        categories: m.categories,
+        createdBy: m.createdBy?.name || 'Unknown',
+        lastUsedAt: m.lastUsedAt
+      })),
+      mostUsedThisWeek: thisWeekUsage,
+      usageByGrader: usageByGraderWithNames,
+      usageByCategory,
+      effectiveness,
+      opportunities: lowMacroCategories.map(c => ({
+        category: c._id,
+        ticketCount: c.count,
+        macroUsage: categoryMacroUsage[c._id] || 0
+      }))
+    });
+  } catch (error) {
+    logger.error('Error fetching macro analytics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get suggested macros for categories
+// @route   GET /api/qa/macros/suggestions?categories=cat1,cat2
+// @access  Private
+exports.getMacroSuggestions = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { categories } = req.query;
+
+    if (!categories) {
+      return res.json({ suggestions: [], frequentlyUsed: [] });
+    }
+
+    const categoryList = categories.split(',').map(c => c.trim()).filter(Boolean);
+
+    // 1. Find macros with matching categories, sorted by usage
+    const categorySuggestions = await Macro.find({
+      categories: { $in: categoryList },
+      $or: [
+        { createdBy: userId },
+        { isPublic: true },
+        { 'sharedWith.userId': userId }
+      ]
+    })
+      .select('title feedback categories usageCount scorecardData createdBy')
+      .populate('createdBy', 'name')
+      .sort({ usageCount: -1 })
+      .limit(5)
+      .lean();
+
+    // 2. User's frequently used macros (from their usage history)
+    const frequentlyUsed = await Macro.aggregate([
+      {
+        $match: {
+          'usedInTickets.usedBy': new mongoose.Types.ObjectId(userId)
+        }
+      },
+      {
+        $addFields: {
+          userUsageCount: {
+            $size: {
+              $filter: {
+                input: '$usedInTickets',
+                cond: { $eq: ['$$this.usedBy', new mongoose.Types.ObjectId(userId)] }
+              }
+            }
+          }
+        }
+      },
+      { $sort: { userUsageCount: -1 } },
+      { $limit: 5 },
+      {
+        $project: {
+          title: 1,
+          feedback: 1,
+          categories: 1,
+          scorecardData: 1,
+          userUsageCount: 1
+        }
+      }
+    ]);
+
+    // 3. Team favorites (most used public macros this week)
+    const startOfWeek = new Date();
+    startOfWeek.setDate(startOfWeek.getDate() - 7);
+
+    const teamFavorites = await Macro.aggregate([
+      { $match: { isPublic: true } },
+      { $unwind: '$usedInTickets' },
+      { $match: { 'usedInTickets.usedAt': { $gte: startOfWeek } } },
+      {
+        $group: {
+          _id: '$_id',
+          title: { $first: '$title' },
+          feedback: { $first: '$feedback' },
+          categories: { $first: '$categories' },
+          scorecardData: { $first: '$scorecardData' },
+          weeklyUsage: { $sum: 1 }
+        }
+      },
+      { $sort: { weeklyUsage: -1 } },
+      { $limit: 5 }
+    ]);
+
+    res.json({
+      suggestions: categorySuggestions.map(m => ({
+        _id: m._id,
+        title: m.title,
+        feedback: m.feedback,
+        categories: m.categories,
+        scorecardData: m.scorecardData,
+        usageCount: m.usageCount,
+        createdBy: m.createdBy?.name || 'Unknown'
+      })),
+      frequentlyUsed: frequentlyUsed.map(m => ({
+        _id: m._id,
+        title: m.title,
+        feedback: m.feedback,
+        categories: m.categories,
+        scorecardData: m.scorecardData,
+        userUsageCount: m.userUsageCount
+      })),
+      teamFavorites: teamFavorites.map(m => ({
+        _id: m._id,
+        title: m.title,
+        feedback: m.feedback,
+        categories: m.categories,
+        scorecardData: m.scorecardData,
+        weeklyUsage: m.weeklyUsage
+      }))
+    });
+  } catch (error) {
+    logger.error('Error fetching macro suggestions:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
