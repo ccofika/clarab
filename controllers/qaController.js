@@ -9,6 +9,17 @@ const {
   generateCoachingSuggestions
 } = require('../utils/openai');
 
+// QA Admin emails - these users have elevated permissions for archive management
+const QA_ADMIN_EMAILS = [
+  'filipkozomara@mebit.io',
+  'nevena@mebit.io'
+];
+
+// Helper function to check if user is a QA admin
+const isQAAdmin = (email) => {
+  return QA_ADMIN_EMAILS.includes(email?.toLowerCase());
+};
+
 // ============================================
 // AGENT CONTROLLERS
 // ============================================
@@ -903,6 +914,30 @@ exports.deleteTicket = async (req, res) => {
   }
 };
 
+// @desc    Bulk delete tickets
+// @route   POST /api/qa/tickets/bulk-delete
+// @access  Private
+exports.bulkDeleteTickets = async (req, res) => {
+  try {
+    const { ticketIds } = req.body;
+
+    if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+      return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
+    }
+
+    const result = await Ticket.deleteMany({ _id: { $in: ticketIds } });
+
+    logger.info(`Bulk deleted ${result.deletedCount} tickets by user ${req.user.email}`);
+    res.json({
+      message: `Successfully deleted ${result.deletedCount} ticket(s)`,
+      count: result.deletedCount
+    });
+  } catch (error) {
+    logger.error('Error bulk deleting tickets:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // @desc    Grade ticket (change status to Graded and set quality score)
 // @route   POST /api/qa/tickets/:id/grade
 // @access  Private
@@ -1003,28 +1038,189 @@ exports.bulkArchiveTickets = async (req, res) => {
 
 // @desc    Restore ticket from archive
 // @route   POST /api/qa/tickets/:id/restore
-// @access  Private
+// @access  Private (only ticket creator or QA admin)
 exports.restoreTicket = async (req, res) => {
   try {
-    const ticket = await Ticket.findByIdAndUpdate(
-      req.params.id,
-      {
-        isArchived: false,
-        archivedDate: null
-      },
-      { new: true }
-    )
-    .populate('agent', 'name team position')
-    .populate('createdBy', 'name email');
+    // First find the ticket to check ownership
+    const ticket = await Ticket.findById(req.params.id)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email');
 
     if (!ticket) {
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
-    logger.info(`Ticket restored: ${ticket.ticketId} by user ${req.user.email}`);
+    // Check if user is the creator or a QA admin
+    const isCreator = ticket.createdBy?._id?.toString() === req.user._id.toString();
+    const userIsAdmin = isQAAdmin(req.user.email);
+
+    if (!isCreator && !userIsAdmin) {
+      return res.status(403).json({ message: 'You can only restore tickets you created' });
+    }
+
+    // Update the ticket
+    ticket.isArchived = false;
+    ticket.archivedDate = null;
+    await ticket.save();
+
+    logger.info(`Ticket restored: ${ticket.ticketId} by user ${req.user.email} (admin: ${userIsAdmin})`);
     res.json(ticket);
   } catch (error) {
     logger.error('Error restoring ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Bulk restore tickets from archive
+// @route   POST /api/qa/tickets/bulk-restore
+// @access  Private (only restores tickets created by user, unless admin)
+exports.bulkRestoreTickets = async (req, res) => {
+  try {
+    const { ticketIds } = req.body;
+    const userId = req.user._id;
+    const userIsAdmin = isQAAdmin(req.user.email);
+
+    if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+      return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
+    }
+
+    // Build query - admins can restore any ticket, others only their own
+    const query = {
+      _id: { $in: ticketIds }
+    };
+
+    if (!userIsAdmin) {
+      query.createdBy = userId;
+    }
+
+    const result = await Ticket.updateMany(
+      query,
+      {
+        isArchived: false,
+        archivedDate: null
+      }
+    );
+
+    // If not admin and some tickets weren't restored, it means they weren't owned by user
+    if (!userIsAdmin && result.modifiedCount < ticketIds.length) {
+      const notRestored = ticketIds.length - result.modifiedCount;
+      logger.info(`Bulk restored ${result.modifiedCount} tickets by user ${req.user.email} (${notRestored} skipped - not owned)`);
+      return res.json({
+        message: `Restored ${result.modifiedCount} ticket(s). ${notRestored} ticket(s) were skipped because you can only restore tickets you created.`,
+        count: result.modifiedCount,
+        skipped: notRestored
+      });
+    }
+
+    logger.info(`Bulk restored ${result.modifiedCount} tickets by user ${req.user.email} (admin: ${userIsAdmin})`);
+    res.json({
+      message: `Successfully restored ${result.modifiedCount} ticket(s)`,
+      count: result.modifiedCount
+    });
+  } catch (error) {
+    logger.error('Error bulk restoring tickets:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Bulk change ticket status
+// @route   POST /api/qa/tickets/bulk-status
+// @access  Private
+exports.bulkChangeStatus = async (req, res) => {
+  try {
+    const { ticketIds, status } = req.body;
+
+    if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
+      return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
+    }
+
+    if (!status || !['Selected', 'Graded'].includes(status)) {
+      return res.status(400).json({ message: 'Please provide a valid status (Selected or Graded)' });
+    }
+
+    const result = await Ticket.updateMany(
+      { _id: { $in: ticketIds } },
+      { status }
+    );
+
+    logger.info(`Bulk changed status to ${status} for ${result.modifiedCount} tickets by user ${req.user.email}`);
+    res.json({
+      message: `Successfully changed status to ${status} for ${result.modifiedCount} ticket(s)`,
+      count: result.modifiedCount
+    });
+  } catch (error) {
+    logger.error('Error bulk changing ticket status:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Archive all tickets matching filters (for current user)
+// @route   POST /api/qa/tickets/archive-all-filtered
+// @access  Private
+exports.archiveAllFiltered = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { agent, status, dateFrom, dateTo, scoreMin, scoreMax, categories, grader } = req.body;
+
+    // Build filter query - same logic as getTickets
+    const query = {
+      createdBy: userId,
+      isArchived: false
+    };
+
+    if (agent) query.agent = agent;
+    if (status) query.status = status;
+    if (grader) query.createdBy = grader;
+    if (dateFrom || dateTo) {
+      query.dateEntered = {};
+      if (dateFrom) query.dateEntered.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        endDate.setHours(23, 59, 59, 999);
+        query.dateEntered.$lte = endDate;
+      }
+    }
+    if (scoreMin > 0) {
+      query.qualityScorePercent = query.qualityScorePercent || {};
+      query.qualityScorePercent.$gte = scoreMin;
+    }
+    if (scoreMax < 100) {
+      query.qualityScorePercent = query.qualityScorePercent || {};
+      query.qualityScorePercent.$lte = scoreMax;
+    }
+    if (categories && categories.length > 0) {
+      query.categories = { $in: categories };
+    }
+
+    // First get all ticket IDs that match the filter
+    const ticketsToArchive = await Ticket.find(query).select('_id ticketId');
+    const ticketIds = ticketsToArchive.map(t => t._id);
+
+    if (ticketIds.length === 0) {
+      return res.json({
+        message: 'No tickets to archive',
+        count: 0,
+        archivedTicketIds: []
+      });
+    }
+
+    // Archive all matching tickets
+    const result = await Ticket.updateMany(
+      { _id: { $in: ticketIds } },
+      {
+        isArchived: true,
+        archivedDate: new Date()
+      }
+    );
+
+    logger.info(`Archive all filtered: ${result.modifiedCount} tickets archived by user ${req.user.email}`);
+    res.json({
+      message: `Successfully archived ${result.modifiedCount} ticket(s)`,
+      count: result.modifiedCount,
+      archivedTicketIds: ticketIds.map(id => id.toString())
+    });
+  } catch (error) {
+    logger.error('Error archiving all filtered tickets:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -4113,5 +4309,125 @@ exports.getQAGradersForCoaching = async (req, res) => {
   } catch (error) {
     logger.error('Error fetching QA graders for coaching:', error);
     res.status(500).json({ message: 'Failed to fetch QA graders' });
+  }
+};
+
+// @desc    Check if current user is a QA admin
+// @route   GET /api/qa/admin/status
+// @access  Private
+exports.getQAAdminStatus = async (req, res) => {
+  try {
+    const userIsAdmin = isQAAdmin(req.user.email);
+    res.json({
+      isAdmin: userIsAdmin,
+      email: req.user.email
+    });
+  } catch (error) {
+    logger.error('Error checking QA admin status:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get all tickets for admin advanced view (all graders, all statuses)
+// @route   GET /api/qa/admin/tickets
+// @access  Private (QA Admin only)
+exports.getAdminAllTickets = async (req, res) => {
+  try {
+    // Check if user is admin
+    if (!isQAAdmin(req.user.email)) {
+      return res.status(403).json({ message: 'Admin access required' });
+    }
+
+    const {
+      agent,
+      status,
+      isArchived,
+      dateFrom,
+      dateTo,
+      scoreMin,
+      scoreMax,
+      search,
+      categories,
+      createdBy,
+      page = 1,
+      limit = 50,
+      sortBy = 'dateEntered',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build filter object - no user restriction for admins
+    const filter = {};
+
+    // Optional archive filter
+    if (isArchived !== undefined) {
+      filter.isArchived = isArchived === 'true';
+    }
+
+    // Optional grader filter
+    if (createdBy) {
+      filter.createdBy = createdBy;
+    }
+
+    if (agent) filter.agent = agent;
+    if (status) filter.status = { $in: status.split(',') };
+
+    if (dateFrom || dateTo) {
+      filter.dateEntered = {};
+      if (dateFrom) filter.dateEntered.$gte = new Date(dateFrom);
+      if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
+    }
+
+    const scoreMinNum = scoreMin !== undefined && scoreMin !== '' ? parseFloat(scoreMin) : null;
+    const scoreMaxNum = scoreMax !== undefined && scoreMax !== '' ? parseFloat(scoreMax) : null;
+
+    if ((scoreMinNum !== null && !isNaN(scoreMinNum)) || (scoreMaxNum !== null && !isNaN(scoreMaxNum))) {
+      filter.qualityScorePercent = {};
+      if (scoreMinNum !== null && !isNaN(scoreMinNum)) {
+        filter.qualityScorePercent.$gte = scoreMinNum;
+      }
+      if (scoreMaxNum !== null && !isNaN(scoreMaxNum)) {
+        filter.qualityScorePercent.$lte = scoreMaxNum;
+      }
+    }
+
+    if (categories) {
+      const categoryList = Array.isArray(categories) ? categories : categories.split(',');
+      filter.categories = { $in: categoryList };
+    }
+
+    if (search) {
+      filter.$or = [
+        { ticketId: { $regex: search, $options: 'i' } },
+        { shortDescription: { $regex: search, $options: 'i' } },
+        { notes: { $regex: search, $options: 'i' } },
+        { feedback: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const total = await Ticket.countDocuments(filter);
+
+    const tickets = await Ticket.find(filter)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email')
+      .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+      .skip(skip)
+      .limit(limitNum);
+
+    res.json({
+      tickets,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching admin tickets:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };

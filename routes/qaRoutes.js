@@ -43,6 +43,10 @@ const {
   archiveTicket,
   bulkArchiveTickets,
   restoreTicket,
+  bulkRestoreTickets,
+  bulkChangeStatus,
+  archiveAllFiltered,
+  bulkDeleteTickets,
   // Dashboard controllers
   getDashboardStats,
   // Export controllers
@@ -87,7 +91,10 @@ const {
   deleteCoachingSession,
   shareCoachingSession,
   unshareCoachingSession,
-  getQAGradersForCoaching
+  getQAGradersForCoaching,
+  // QA Archive Admin
+  getQAAdminStatus,
+  getAdminAllTickets
 } = require('../controllers/qaController');
 
 const {
@@ -271,6 +278,10 @@ router.route('/tickets/:id')
 
 // Ticket actions
 router.post('/tickets/bulk-archive', bulkArchiveTickets);
+router.post('/tickets/bulk-restore', bulkRestoreTickets);
+router.post('/tickets/bulk-status', bulkChangeStatus);
+router.post('/tickets/bulk-delete', bulkDeleteTickets);
+router.post('/tickets/archive-all-filtered', archiveAllFiltered);
 router.post('/tickets/:id/grade', gradeTicket);
 router.post('/tickets/:id/archive', archiveTicket);
 router.post('/tickets/:id/restore', restoreTicket);
@@ -299,6 +310,16 @@ router.get('/ai-search', aiSemanticSearch);
 router.post('/tickets/:id/generate-embedding', generateTicketEmbeddingEndpoint);
 router.post('/generate-all-embeddings', generateAllTicketEmbeddings);
 router.post('/tickets/similar-feedbacks', getSimilarFeedbacks);
+
+// ============================================
+// QA ADMIN STATUS ROUTE
+// ============================================
+
+// Check if current user is a QA admin (for archive permissions)
+router.get('/admin/status', getQAAdminStatus);
+
+// Get all tickets for admin advanced view (admin only)
+router.get('/admin/tickets', getAdminAllTickets);
 
 // ============================================
 // ANALYTICS ROUTES

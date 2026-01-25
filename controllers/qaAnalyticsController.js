@@ -1,38 +1,27 @@
 const Ticket = require('../models/Ticket');
 const Agent = require('../models/Agent');
 const QASession = require('../models/QASession');
+const QAAllowedEmail = require('../models/QAAllowedEmail');
 const logger = require('../utils/logger');
 const { generateEmbedding, cosineSimilarity, qaAssistant } = require('../utils/openai');
 
 // Admin emails who can view other graders' analytics
 const ADMIN_EMAILS = ['filipkozomara@mebit.io', 'nevena@mebit.io'];
 
-// QA Grader emails for filtering
-const QA_GRADERS = [
-  { email: 'vasilijevitorovic@mebit.io', name: 'Vasilije Vitorovic' },
-  { email: 'jovangajic@mebit.io', name: 'Jovan Gajic' },
-  { email: 'mladenjovanovic@mebit.io', name: 'Mladen Jovanovic' },
-  { email: 'filipkozomara@mebit.io', name: 'Filip Kozomara' },
-  { email: 'nevena@mebit.io', name: 'Nevena' }
-];
-
 // @desc    Get list of QA graders (for admin filter)
 // @route   GET /api/qa/analytics/graders
-// @access  Private (Admin only)
+// @access  Private
 exports.getGraders = async (req, res) => {
   try {
-    const userEmail = req.user.email;
+    // Get all allowed QA emails from database
+    const allowedEmails = await QAAllowedEmail.find({}).select('email');
+    const emailList = allowedEmails.map(e => e.email.toLowerCase());
 
-    // Only admins can see grader list
-    if (!ADMIN_EMAILS.includes(userEmail)) {
-      return res.status(403).json({ message: 'Access denied' });
-    }
-
-    // Get users who have created tickets (actual graders)
+    // Get users who are QA graders
     const User = require('../models/User');
     const graders = await User.find({
-      email: { $in: QA_GRADERS.map(g => g.email) }
-    }).select('_id name email');
+      email: { $in: emailList }
+    }).select('_id name email').sort({ name: 1 });
 
     res.json(graders);
   } catch (error) {
@@ -88,8 +77,10 @@ exports.getAnalytics = async (req, res) => {
     // If admin selected "all", get all graders' tickets
     if (isAdmin && graderId === 'all') {
       const User = require('../models/User');
+      const allowedEmails = await QAAllowedEmail.find({}).select('email');
+      const emailList = allowedEmails.map(e => e.email.toLowerCase());
       const graderUsers = await User.find({
-        email: { $in: QA_GRADERS.map(g => g.email) }
+        email: { $in: emailList }
       }).select('_id');
       ticketFilter.createdBy = { $in: graderUsers.map(u => u._id) };
     } else {
