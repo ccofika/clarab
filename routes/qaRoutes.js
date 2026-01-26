@@ -94,7 +94,15 @@ const {
   getQAGradersForCoaching,
   // QA Archive Admin
   getQAAdminStatus,
-  getAdminAllTickets
+  getAdminAllTickets,
+  // Review controllers
+  getReviewTickets,
+  getReviewTicket,
+  updateReviewTicket,
+  approveTicket,
+  denyTicket,
+  getReviewAnalytics,
+  getReviewPendingCount
 } = require('../controllers/qaController');
 
 const {
@@ -222,6 +230,24 @@ const statisticsAuth = (req, res, next) => {
   next();
 };
 
+// Review authorization - only specific reviewers can access review functionality
+const reviewAuth = (req, res, next) => {
+  const reviewerEmails = [
+    'filipkozomara@mebit.io',
+    'nevena@mebit.io',
+    'majabasic@mebit.io',
+    'ana@mebit.io'
+  ];
+
+  if (!reviewerEmails.includes(req.user.email)) {
+    return res.status(403).json({
+      message: 'Access denied. Only reviewers can access this resource.'
+    });
+  }
+
+  next();
+};
+
 // Check access endpoint - needs to be BEFORE qaAuthorization middleware
 // This allows frontend to check if user has QA access without getting 403
 router.get('/check-access', protect, async (req, res) => {
@@ -285,6 +311,25 @@ router.post('/tickets/archive-all-filtered', archiveAllFiltered);
 router.post('/tickets/:id/grade', gradeTicket);
 router.post('/tickets/:id/archive', archiveTicket);
 router.post('/tickets/:id/restore', restoreTicket);
+
+// ============================================
+// REVIEW ROUTES (Reviewers only - Filip, Nevena, Maja, Ana)
+// ============================================
+
+// Get pending review count (for notification badge)
+router.get('/review/pending-count', reviewAuth, getReviewPendingCount);
+
+// Review analytics
+router.get('/review/analytics', reviewAuth, getReviewAnalytics);
+
+// Review tickets CRUD
+router.get('/review/tickets', reviewAuth, getReviewTickets);
+router.get('/review/tickets/:id', reviewAuth, getReviewTicket);
+router.put('/review/tickets/:id', reviewAuth, updateReviewTicket);
+
+// Approve/Deny actions
+router.post('/review/tickets/:id/approve', reviewAuth, approveTicket);
+router.post('/review/tickets/:id/deny', reviewAuth, denyTicket);
 
 // ============================================
 // DASHBOARD ROUTES

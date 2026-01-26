@@ -717,6 +717,40 @@ exports.createTicket = async (req, res) => {
       ticketData.scorecardValues = req.body.scorecardValues;
     }
 
+    // Review logic: If quality score < 85% and user should have tickets reviewed, set status to Draft
+    const qualityScore = parseFloat(req.body.qualityScorePercent);
+    const userEmail = req.user.email?.toLowerCase();
+
+    // Check if user's tickets should go to review
+    // Only Filip's tickets go to review among reviewers, other reviewers skip review
+    const REVIEWER_EMAILS_LOCAL = [
+      'filipkozomara@mebit.io',
+      'nevena@mebit.io',
+      'majabasic@mebit.io',
+      'ana@mebit.io'
+    ];
+
+    const shouldGoToReview = (email) => {
+      // Only Filip's tickets go to review
+      if (email === 'filipkozomara@mebit.io') return true;
+      // Other reviewers skip review
+      if (REVIEWER_EMAILS_LOCAL.includes(email)) return false;
+      // All other graders' tickets go to review
+      return true;
+    };
+
+    if (!isNaN(qualityScore) && qualityScore < 85 && shouldGoToReview(userEmail)) {
+      ticketData.status = 'Draft';
+      ticketData.originalReviewScore = qualityScore;
+      ticketData.firstReviewDate = new Date();
+      ticketData.reviewHistory = [{
+        action: 'sent_to_review',
+        date: new Date(),
+        scoreAtAction: qualityScore
+      }];
+      logger.info(`Ticket will be sent to review - score ${qualityScore}% < 85% by user ${userEmail}`);
+    }
+
     const ticket = await Ticket.create(ticketData);
 
     const populatedTicket = await Ticket.findById(ticket._id)
@@ -805,6 +839,83 @@ exports.updateTicket = async (req, res) => {
     const currentTicket = await Ticket.findById(req.params.id);
     if (!currentTicket) {
       return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Review logic constants
+    const REVIEWER_EMAILS_LOCAL = [
+      'filipkozomara@mebit.io',
+      'nevena@mebit.io',
+      'majabasic@mebit.io',
+      'ana@mebit.io'
+    ];
+    const userEmail = req.user.email?.toLowerCase();
+
+    const shouldGoToReview = (email) => {
+      if (email === 'filipkozomara@mebit.io') return true;
+      if (REVIEWER_EMAILS_LOCAL.includes(email)) return false;
+      return true;
+    };
+
+    const newQualityScore = req.body.qualityScorePercent !== undefined
+      ? parseFloat(req.body.qualityScorePercent)
+      : currentTicket.qualityScorePercent;
+
+    // Handle review logic based on current status
+    // Only applies to Selected and 'Waiting on your input' statuses
+    // Graded tickets don't go through review regardless of score changes
+
+    if (currentTicket.status === 'Selected') {
+      // If score is being set/changed to < 85% and user should go to review
+      if (!isNaN(newQualityScore) && newQualityScore < 85 && shouldGoToReview(userEmail)) {
+        // Check if this is a new score being set (not already Draft)
+        if (currentTicket.qualityScorePercent !== newQualityScore) {
+          req.body.status = 'Draft';
+          req.body.originalReviewScore = newQualityScore;
+          req.body.firstReviewDate = currentTicket.firstReviewDate || new Date();
+          // Add to review history
+          const currentHistory = currentTicket.reviewHistory || [];
+          req.body.reviewHistory = [...currentHistory, {
+            action: 'sent_to_review',
+            date: new Date(),
+            scoreAtAction: newQualityScore
+          }];
+          logger.info(`Ticket ${currentTicket.ticketId} sent to review - score changed to ${newQualityScore}% < 85%`);
+        }
+      }
+    }
+
+    if (currentTicket.status === 'Waiting on your input') {
+      // Grader is responding to a denied ticket
+      const requestedStatus = req.body.status;
+
+      if (requestedStatus === 'Selected') {
+        // Can only go to Selected if score >= 85%
+        if (isNaN(newQualityScore) || newQualityScore < 85) {
+          return res.status(400).json({
+            message: 'Cannot set status to Selected when quality score is below 85%. Set status to Draft to resubmit for review.'
+          });
+        }
+        // Score >= 85%, allow transition to Selected
+        logger.info(`Ticket ${currentTicket.ticketId} moved to Selected - score ${newQualityScore}% >= 85%`);
+      } else if (requestedStatus === 'Draft') {
+        // Going back to review
+        const currentHistory = currentTicket.reviewHistory || [];
+        req.body.reviewHistory = [...currentHistory, {
+          action: 'sent_to_review',
+          date: new Date(),
+          scoreAtAction: newQualityScore
+        }];
+        // Keep the original review score from first submission
+        if (!currentTicket.originalReviewScore) {
+          req.body.originalReviewScore = newQualityScore;
+        }
+        logger.info(`Ticket ${currentTicket.ticketId} resubmitted to review - score ${newQualityScore}%`);
+      } else if (requestedStatus === 'Graded') {
+        // Cannot go directly to Graded from 'Waiting on your input'
+        return res.status(400).json({
+          message: 'Cannot set status to Graded from "Waiting on your input". Please submit for review first.'
+        });
+      }
     }
 
     // If status is being changed to 'Graded' and gradedDate is not set, set it now
@@ -983,6 +1094,20 @@ exports.gradeTicket = async (req, res) => {
 // @access  Private
 exports.archiveTicket = async (req, res) => {
   try {
+    // First check if ticket exists and its status
+    const existingTicket = await Ticket.findById(req.params.id);
+
+    if (!existingTicket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // Block archiving Draft and 'Waiting on your input' tickets
+    if (existingTicket.status === 'Draft' || existingTicket.status === 'Waiting on your input') {
+      return res.status(400).json({
+        message: `Cannot archive ticket with status "${existingTicket.status}". Please complete the review process first.`
+      });
+    }
+
     const ticket = await Ticket.findByIdAndUpdate(
       req.params.id,
       {
@@ -993,10 +1118,6 @@ exports.archiveTicket = async (req, res) => {
     )
     .populate('agent', 'name team position')
     .populate('createdBy', 'name email');
-
-    if (!ticket) {
-      return res.status(404).json({ message: 'Ticket not found' });
-    }
 
     logger.info(`Ticket archived: ${ticket.ticketId} by user ${req.user.email}`);
     res.json(ticket);
@@ -1017,18 +1138,30 @@ exports.bulkArchiveTickets = async (req, res) => {
       return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
     }
 
+    // Exclude Draft and 'Waiting on your input' tickets from archiving
     const result = await Ticket.updateMany(
-      { _id: { $in: ticketIds } },
+      {
+        _id: { $in: ticketIds },
+        status: { $nin: ['Draft', 'Waiting on your input'] }
+      },
       {
         isArchived: true,
         archivedDate: new Date()
       }
     );
 
-    logger.info(`Bulk archived ${result.modifiedCount} tickets by user ${req.user.email}`);
+    // Check if some tickets were skipped due to review status
+    const skippedCount = ticketIds.length - result.modifiedCount;
+    let message = `Successfully archived ${result.modifiedCount} ticket(s)`;
+    if (skippedCount > 0) {
+      message += `. ${skippedCount} ticket(s) skipped (in review process).`;
+    }
+
+    logger.info(`Bulk archived ${result.modifiedCount} tickets by user ${req.user.email}. Skipped: ${skippedCount}`);
     res.json({
-      message: `Successfully archived ${result.modifiedCount} ticket(s)`,
-      count: result.modifiedCount
+      message,
+      count: result.modifiedCount,
+      skipped: skippedCount
     });
   } catch (error) {
     logger.error('Error bulk archiving tickets:', error);
@@ -1134,14 +1267,52 @@ exports.bulkChangeStatus = async (req, res) => {
       return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
     }
 
-    if (!status || !['Selected', 'Graded'].includes(status)) {
-      return res.status(400).json({ message: 'Please provide a valid status (Selected or Graded)' });
+    const validStatuses = ['Selected', 'Graded', 'Draft'];
+    if (!status || !validStatuses.includes(status)) {
+      return res.status(400).json({ message: `Please provide a valid status (${validStatuses.join(', ')})` });
     }
 
-    const result = await Ticket.updateMany(
-      { _id: { $in: ticketIds } },
-      { status }
-    );
+    let filter = { _id: { $in: ticketIds } };
+    let updateData = { status };
+
+    // Special handling for Draft status - only allow from 'Waiting on your input'
+    if (status === 'Draft') {
+      filter.status = 'Waiting on your input';
+
+      // Add review history entry for each ticket being resubmitted
+      const ticketsToUpdate = await Ticket.find(filter);
+      const bulkOps = ticketsToUpdate.map(ticket => ({
+        updateOne: {
+          filter: { _id: ticket._id },
+          update: {
+            $set: { status: 'Draft' },
+            $push: {
+              reviewHistory: {
+                action: 'sent_to_review',
+                date: new Date(),
+                scoreAtAction: ticket.qualityScorePercent
+              }
+            }
+          }
+        }
+      }));
+
+      if (bulkOps.length > 0) {
+        const result = await Ticket.bulkWrite(bulkOps);
+        logger.info(`Bulk changed status to Draft for ${result.modifiedCount} tickets by user ${req.user.email}`);
+        return res.json({
+          message: `Successfully changed status to Draft for ${result.modifiedCount} ticket(s)`,
+          count: result.modifiedCount
+        });
+      } else {
+        return res.json({
+          message: 'No tickets with "Waiting on your input" status to change',
+          count: 0
+        });
+      }
+    }
+
+    const result = await Ticket.updateMany(filter, updateData);
 
     logger.info(`Bulk changed status to ${status} for ${result.modifiedCount} tickets by user ${req.user.email}`);
     res.json({
@@ -1241,6 +1412,8 @@ exports.getDashboardStats = async (req, res) => {
     const totalTickets = await Ticket.countDocuments({ isArchived: false, createdBy: userId });
     const gradedTickets = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId });
     const selectedTickets = await Ticket.countDocuments({ status: 'Selected', isArchived: false, createdBy: userId });
+    const draftTickets = await Ticket.countDocuments({ status: 'Draft', isArchived: false, createdBy: userId });
+    const waitingTickets = await Ticket.countDocuments({ status: 'Waiting on your input', isArchived: false, createdBy: userId });
 
     // Average quality score for current user's tickets
     const avgScoreResult = await Ticket.aggregate([
@@ -1305,6 +1478,8 @@ exports.getDashboardStats = async (req, res) => {
       totalTickets,
       gradedTickets,
       selectedTickets,
+      draftTickets,
+      waitingTickets,
       avgScore,
       ticketsThisWeek,
       agentStats,
@@ -4428,6 +4603,403 @@ exports.getAdminAllTickets = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error fetching admin tickets:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// REVIEW CONTROLLERS
+// ============================================
+
+// Reviewer emails - users who can access review functionality
+const REVIEWER_EMAILS = [
+  'filipkozomara@mebit.io',
+  'nevena@mebit.io',
+  'majabasic@mebit.io',
+  'ana@mebit.io'
+];
+
+// Helper function to check if user is a reviewer
+const isReviewer = (email) => {
+  return REVIEWER_EMAILS.includes(email?.toLowerCase());
+};
+
+// Helper function to check if user should have their tickets reviewed
+// Only Filip's tickets go to review, other reviewers' tickets skip review
+const shouldTicketGoToReview = (userEmail) => {
+  const email = userEmail?.toLowerCase();
+  // Only Filip's tickets go to review
+  if (email === 'filipkozomara@mebit.io') return true;
+  // Other reviewers skip review
+  if (REVIEWER_EMAILS.includes(email)) return false;
+  // All other graders' tickets go to review
+  return true;
+};
+
+// @desc    Get pending review ticket count
+// @route   GET /api/qa/review/pending-count
+// @access  Private (Reviewers only)
+exports.getReviewPendingCount = async (req, res) => {
+  try {
+    const count = await Ticket.countDocuments({
+      status: 'Draft',
+      isArchived: false
+    });
+
+    res.json({ count });
+  } catch (error) {
+    logger.error('Error fetching review pending count:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get all tickets pending review
+// @route   GET /api/qa/review/tickets
+// @access  Private (Reviewers only)
+exports.getReviewTickets = async (req, res) => {
+  try {
+    const {
+      agent,
+      dateFrom,
+      dateTo,
+      scoreMin,
+      scoreMax,
+      search,
+      categories,
+      createdBy,
+      page = 1,
+      limit = 50,
+      sortBy = 'firstReviewDate',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build filter - only Draft tickets
+    const filter = {
+      status: 'Draft',
+      isArchived: false
+    };
+
+    if (agent) filter.agent = agent;
+    if (createdBy) filter.createdBy = createdBy;
+
+    if (dateFrom || dateTo) {
+      filter.dateEntered = {};
+      if (dateFrom) filter.dateEntered.$gte = new Date(dateFrom);
+      if (dateTo) filter.dateEntered.$lte = new Date(dateTo);
+    }
+
+    const scoreMinNum = scoreMin !== undefined && scoreMin !== '' ? parseFloat(scoreMin) : null;
+    const scoreMaxNum = scoreMax !== undefined && scoreMax !== '' ? parseFloat(scoreMax) : null;
+
+    if ((scoreMinNum !== null && !isNaN(scoreMinNum)) || (scoreMaxNum !== null && !isNaN(scoreMaxNum))) {
+      filter.qualityScorePercent = {};
+      if (scoreMinNum !== null && !isNaN(scoreMinNum)) {
+        filter.qualityScorePercent.$gte = scoreMinNum;
+      }
+      if (scoreMaxNum !== null && !isNaN(scoreMaxNum)) {
+        filter.qualityScorePercent.$lte = scoreMaxNum;
+      }
+    }
+
+    if (categories) {
+      const categoryList = Array.isArray(categories) ? categories : categories.split(',');
+      filter.categories = { $in: categoryList };
+    }
+
+    if (search) {
+      filter.$or = [
+        { ticketId: { $regex: search, $options: 'i' } },
+        { shortDescription: { $regex: search, $options: 'i' } },
+        { notes: { $regex: search, $options: 'i' } },
+        { feedback: { $regex: search, $options: 'i' } },
+        { additionalNote: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const total = await Ticket.countDocuments(filter);
+
+    const tickets = await Ticket.find(filter)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email')
+      .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+      .skip(skip)
+      .limit(limitNum);
+
+    res.json({
+      tickets,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching review tickets:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get single review ticket
+// @route   GET /api/qa/review/tickets/:id
+// @access  Private (Reviewers only)
+exports.getReviewTicket = async (req, res) => {
+  try {
+    const ticket = await Ticket.findOne({
+      _id: req.params.id,
+      status: 'Draft',
+      isArchived: false
+    })
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email')
+      .populate('reviewHistory.reviewedBy', 'name email');
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Review ticket not found' });
+    }
+
+    res.json(ticket);
+  } catch (error) {
+    logger.error('Error fetching review ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Update review ticket (reviewers can edit all fields + additionalNote)
+// @route   PUT /api/qa/review/tickets/:id
+// @access  Private (Reviewers only)
+exports.updateReviewTicket = async (req, res) => {
+  try {
+    const ticket = await Ticket.findOne({
+      _id: req.params.id,
+      status: 'Draft',
+      isArchived: false
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Review ticket not found' });
+    }
+
+    const {
+      qualityScorePercent,
+      notes,
+      feedback,
+      categories,
+      scorecardVariant,
+      scorecardValues,
+      additionalNote
+    } = req.body;
+
+    // Update allowed fields
+    if (qualityScorePercent !== undefined) ticket.qualityScorePercent = qualityScorePercent;
+    if (notes !== undefined) ticket.notes = notes;
+    if (feedback !== undefined) ticket.feedback = feedback;
+    if (categories !== undefined) ticket.categories = categories;
+    if (scorecardVariant !== undefined) ticket.scorecardVariant = scorecardVariant;
+    if (scorecardValues !== undefined) ticket.scorecardValues = scorecardValues;
+    if (additionalNote !== undefined) ticket.additionalNote = additionalNote;
+
+    await ticket.save();
+
+    const updatedTicket = await Ticket.findById(ticket._id)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email');
+
+    res.json(updatedTicket);
+  } catch (error) {
+    logger.error('Error updating review ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Approve a review ticket (moves to Selected status)
+// @route   POST /api/qa/review/tickets/:id/approve
+// @access  Private (Reviewers only)
+exports.approveTicket = async (req, res) => {
+  try {
+    const ticket = await Ticket.findOne({
+      _id: req.params.id,
+      status: 'Draft',
+      isArchived: false
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Review ticket not found' });
+    }
+
+    // Add to review history
+    ticket.reviewHistory.push({
+      action: 'approved',
+      date: new Date(),
+      reviewedBy: req.user._id,
+      scoreAtAction: ticket.qualityScorePercent,
+      note: req.body.note || ''
+    });
+
+    // Change status to Selected
+    ticket.status = 'Selected';
+
+    await ticket.save();
+
+    logger.info(`Ticket ${ticket.ticketId} approved by ${req.user.email}. Original score: ${ticket.originalReviewScore}, Final score: ${ticket.qualityScorePercent}`);
+
+    const updatedTicket = await Ticket.findById(ticket._id)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email');
+
+    res.json({
+      message: 'Ticket approved successfully',
+      ticket: updatedTicket
+    });
+  } catch (error) {
+    logger.error('Error approving ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Deny a review ticket (moves to 'Waiting on your input' status)
+// @route   POST /api/qa/review/tickets/:id/deny
+// @access  Private (Reviewers only)
+exports.denyTicket = async (req, res) => {
+  try {
+    const ticket = await Ticket.findOne({
+      _id: req.params.id,
+      status: 'Draft',
+      isArchived: false
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: 'Review ticket not found' });
+    }
+
+    // Add to review history
+    ticket.reviewHistory.push({
+      action: 'denied',
+      date: new Date(),
+      reviewedBy: req.user._id,
+      scoreAtAction: ticket.qualityScorePercent,
+      note: req.body.note || ''
+    });
+
+    // Change status to 'Waiting on your input'
+    ticket.status = 'Waiting on your input';
+
+    await ticket.save();
+
+    logger.info(`Ticket ${ticket.ticketId} denied by ${req.user.email}. Score: ${ticket.qualityScorePercent}`);
+
+    const updatedTicket = await Ticket.findById(ticket._id)
+      .populate('agent', 'name team position')
+      .populate('createdBy', 'name email');
+
+    res.json({
+      message: 'Ticket denied successfully',
+      ticket: updatedTicket
+    });
+  } catch (error) {
+    logger.error('Error denying ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get review analytics (grader performance based on score differences)
+// @route   GET /api/qa/review/analytics
+// @access  Private (Reviewers only)
+exports.getReviewAnalytics = async (req, res) => {
+  try {
+    const { dateFrom, dateTo, createdBy } = req.query;
+
+    // Build filter for tickets that have been through review
+    const filter = {
+      originalReviewScore: { $ne: null },
+      reviewHistory: { $exists: true, $ne: [] }
+    };
+
+    if (dateFrom || dateTo) {
+      filter.firstReviewDate = {};
+      if (dateFrom) filter.firstReviewDate.$gte = new Date(dateFrom);
+      if (dateTo) filter.firstReviewDate.$lte = new Date(dateTo);
+    }
+
+    if (createdBy) {
+      filter.createdBy = createdBy;
+    }
+
+    // Get all reviewed tickets
+    const tickets = await Ticket.find(filter)
+      .populate('agent', 'name')
+      .populate('createdBy', 'name email')
+      .populate('reviewHistory.reviewedBy', 'name email')
+      .sort({ firstReviewDate: -1 });
+
+    // Group by grader
+    const graderStats = {};
+
+    for (const ticket of tickets) {
+      const graderId = ticket.createdBy._id.toString();
+      const graderName = ticket.createdBy.name || ticket.createdBy.email;
+      const graderEmail = ticket.createdBy.email;
+
+      if (!graderStats[graderId]) {
+        graderStats[graderId] = {
+          graderId,
+          graderName,
+          graderEmail,
+          tickets: [],
+          totalTickets: 0,
+          avgScoreDifference: 0,
+          totalScoreDifference: 0
+        };
+      }
+
+      // Calculate score difference (final - original)
+      // Positive = improved, Negative = worsened
+      const scoreDifference = (ticket.qualityScorePercent || 0) - (ticket.originalReviewScore || 0);
+
+      graderStats[graderId].tickets.push({
+        _id: ticket._id,
+        ticketId: ticket.ticketId,
+        agentName: ticket.agent?.name || 'Unknown',
+        originalScore: ticket.originalReviewScore,
+        finalScore: ticket.qualityScorePercent,
+        scoreDifference,
+        firstReviewDate: ticket.firstReviewDate,
+        reviewHistory: ticket.reviewHistory,
+        additionalNote: ticket.additionalNote
+      });
+
+      graderStats[graderId].totalTickets++;
+      graderStats[graderId].totalScoreDifference += Math.abs(scoreDifference);
+    }
+
+    // Calculate averages and sort tickets by score difference (worst first)
+    const gradersArray = Object.values(graderStats).map(grader => {
+      grader.avgScoreDifference = grader.totalTickets > 0
+        ? Math.round((grader.totalScoreDifference / grader.totalTickets) * 100) / 100
+        : 0;
+
+      // Sort tickets by absolute score difference (larger difference = worse)
+      grader.tickets.sort((a, b) => Math.abs(b.scoreDifference) - Math.abs(a.scoreDifference));
+
+      return grader;
+    });
+
+    // Sort graders by average score difference (larger = worse performance)
+    gradersArray.sort((a, b) => b.avgScoreDifference - a.avgScoreDifference);
+
+    res.json({
+      graders: gradersArray,
+      summary: {
+        totalGraders: gradersArray.length,
+        totalReviewedTickets: tickets.length
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching review analytics:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

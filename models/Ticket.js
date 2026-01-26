@@ -20,7 +20,7 @@ const ticketSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['Selected', 'Graded'],
+    enum: ['Selected', 'Graded', 'Draft', 'Waiting on your input'],
     default: 'Selected'
   },
   dateEntered: {
@@ -107,7 +107,40 @@ const ticketSchema = new mongoose.Schema({
   scorecardValues: {
     type: Object,
     default: {}
-  }
+  },
+  // Review system fields
+  // Original score when first sent to review (for analytics)
+  originalReviewScore: {
+    type: Number,
+    min: [0, 'Original review score cannot be less than 0'],
+    max: [100, 'Original review score cannot exceed 100']
+  },
+  // Review note from reviewers (only reviewers can edit)
+  additionalNote: {
+    type: String,
+    trim: true
+  },
+  // Track when ticket was first sent to review
+  firstReviewDate: {
+    type: Date
+  },
+  // Track review history
+  reviewHistory: [{
+    action: {
+      type: String,
+      enum: ['sent_to_review', 'approved', 'denied']
+    },
+    date: {
+      type: Date,
+      default: Date.now
+    },
+    reviewedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User'
+    },
+    scoreAtAction: Number,
+    note: String
+  }]
 }, {
   timestamps: true
 });
@@ -130,6 +163,8 @@ ticketSchema.index({ tags: 1 });
 ticketSchema.index({ weekNumber: 1, weekYear: 1 });
 ticketSchema.index({ qualityScorePercent: 1 });
 ticketSchema.index({ gradedDate: -1 });
+ticketSchema.index({ status: 1, createdBy: 1, isArchived: 1 }); // For review queries
+ticketSchema.index({ firstReviewDate: -1 }); // For review analytics
 
 // Pre-save middleware to update lastModified, set gradedDate, and calculate week info
 ticketSchema.pre('save', function(next) {
