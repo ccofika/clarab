@@ -823,8 +823,15 @@ exports.updateTicket = async (req, res) => {
     // Debug: Log what categories are being sent
     logger.info(`Update ticket - received categories: ${JSON.stringify(req.body.categories)}`);
 
-    // If agent is being updated, check if it exists and is in user's active grading list
-    if (req.body.agent) {
+    // Get current ticket to check status change
+    const currentTicket = await Ticket.findById(req.params.id);
+    if (!currentTicket) {
+      return res.status(404).json({ message: 'Ticket not found' });
+    }
+
+    // If agent is being updated (changed from current), check if it exists and is in user's active grading list
+    const isAgentChanged = req.body.agent && req.body.agent !== currentTicket.agent?.toString();
+    if (isAgentChanged) {
       const agent = await Agent.findOne({
         _id: req.body.agent,
         activeForUsers: req.user._id,
@@ -833,12 +840,6 @@ exports.updateTicket = async (req, res) => {
       if (!agent) {
         return res.status(400).json({ message: 'Invalid agent ID or agent is not in your grading list' });
       }
-    }
-
-    // Get current ticket to check status change
-    const currentTicket = await Ticket.findById(req.params.id);
-    if (!currentTicket) {
-      return res.status(404).json({ message: 'Ticket not found' });
     }
 
     // Review logic constants
@@ -865,10 +866,14 @@ exports.updateTicket = async (req, res) => {
     // Graded tickets don't go through review regardless of score changes
 
     if (currentTicket.status === 'Selected') {
-      // If score is being set/changed to < 85% and user should go to review
-      if (!isNaN(newQualityScore) && newQualityScore < 85 && shouldGoToReview(userEmail)) {
-        // Check if this is a new score being set (not already Draft)
-        if (currentTicket.qualityScorePercent !== newQualityScore) {
+      // Check if ticket has already been through review (has an 'approved' action in history)
+      const hasBeenReviewed = currentTicket.reviewHistory &&
+        currentTicket.reviewHistory.some(h => h.action === 'approved');
+
+      // If score is being set/changed to < 85%, user should go to review, AND ticket hasn't been reviewed yet
+      if (!isNaN(newQualityScore) && newQualityScore < 85 && shouldGoToReview(userEmail) && !hasBeenReviewed) {
+        // Check if this is a new score being set or changed
+        if (currentTicket.qualityScorePercent !== newQualityScore || currentTicket.qualityScorePercent === null || currentTicket.qualityScorePercent === undefined) {
           req.body.status = 'Draft';
           req.body.originalReviewScore = newQualityScore;
           req.body.firstReviewDate = currentTicket.firstReviewDate || new Date();
@@ -879,9 +884,19 @@ exports.updateTicket = async (req, res) => {
             date: new Date(),
             scoreAtAction: newQualityScore
           }];
-          logger.info(`Ticket ${currentTicket.ticketId} sent to review - score changed to ${newQualityScore}% < 85%`);
+          logger.info(`Ticket ${currentTicket.ticketId} sent to review - score ${newQualityScore}% < 85% (first time)`);
         }
       }
+    }
+
+    if (currentTicket.status === 'Draft') {
+      // Grader is editing a ticket that's pending review
+      // If score is now >= 85%, automatically move to Selected
+      if (!isNaN(newQualityScore) && newQualityScore >= 85) {
+        req.body.status = 'Selected';
+        logger.info(`Ticket ${currentTicket.ticketId} moved from Draft to Selected - score ${newQualityScore}% >= 85%`);
+      }
+      // If score is still < 85%, keep in Draft (no status change needed)
     }
 
     if (currentTicket.status === 'Waiting on your input') {

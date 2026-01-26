@@ -240,10 +240,10 @@ const schemas = {
         'string.max': 'Short description must not exceed 500 characters'
       }),
     status: Joi.string()
-      .valid('Selected', 'Graded')
+      .valid('Selected', 'Graded', 'Draft', 'Waiting on your input')
       .optional()
       .messages({
-        'any.only': 'Status must be Selected or Graded'
+        'any.only': 'Status must be Selected, Graded, Draft, or Waiting on your input'
       }),
     dateEntered: Joi.date()
       .iso()
@@ -300,10 +300,10 @@ const schemas = {
       .optional()
       .allow(''),
     status: Joi.string()
-      .valid('Selected', 'Graded')
+      .valid('Selected', 'Graded', 'Draft', 'Waiting on your input')
       .optional()
       .messages({
-        'any.only': 'Status must be Selected or Graded'
+        'any.only': 'Status must be Selected, Graded, Draft, or Waiting on your input'
       }),
     dateEntered: Joi.date()
       .iso()
