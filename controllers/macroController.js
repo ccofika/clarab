@@ -31,8 +31,13 @@ exports.getAllMacros = async (req, res) => {
       macros = await Macro.find({ createdBy: creatorId })
         .populate('createdBy', 'name email')
         .sort({ usageCount: -1, title: 1 });
+    } else if (isAdmin) {
+      // Admins without creatorId filter see ALL macros
+      macros = await Macro.find({})
+        .populate('createdBy', 'name email')
+        .sort({ usageCount: -1, title: 1 });
     } else {
-      // Normal query: own + public + shared with user
+      // Normal users: own + public + shared with user
       macros = await Macro.find({
         $or: [
           { createdBy: userId },
@@ -136,8 +141,13 @@ exports.searchMacros = async (req, res) => {
         createdBy: creatorId,
         title: { $regex: searchTerm, $options: 'i' }
       };
+    } else if (isAdmin) {
+      // Admins without creatorId filter search ALL macros
+      query = {
+        title: { $regex: searchTerm, $options: 'i' }
+      };
     } else {
-      // Normal query: own + public + shared with user
+      // Normal users: own + public + shared with user
       query = {
         $or: [
           { createdBy: userId },
@@ -241,7 +251,7 @@ exports.createMacro = async (req, res) => {
 
 // @desc    Update macro
 // @route   PUT /api/qa/macros/:id
-// @access  Private
+// @access  Private (only owner or admin can update)
 exports.updateMacro = async (req, res) => {
   try {
     const userId = req.user._id;
@@ -249,120 +259,90 @@ exports.updateMacro = async (req, res) => {
     const isAdmin = isMacroAdmin(userEmail);
     const { title, feedback, scorecardData, categories, isPublic, sharedWith } = req.body;
 
-    let macro;
-
-    if (isAdmin) {
-      // Admins can access any macro
-      macro = await Macro.findById(req.params.id);
-    } else {
-      // Regular users: find macro they have access to
-      macro = await Macro.findOne({
-        _id: req.params.id,
-        $or: [
-          { createdBy: userId },
-          { isPublic: true },
-          { 'sharedWith.userId': userId }
-        ]
-      });
-    }
+    // Find the macro
+    const macro = await Macro.findById(req.params.id);
 
     if (!macro) {
       return res.status(404).json({ message: 'Macro not found' });
     }
 
     const isOwner = macro.createdBy.toString() === userId.toString();
-    // Admins can edit like owners (but don't become the owner)
-    const canEditContent = isOwner || isAdmin;
 
-    // Owner or admin can update content (title, feedback, categories, scorecardData)
-    if (canEditContent) {
-      // Check if new title conflicts with another macro (check against original creator's macros)
-      if (title && title.trim().toLowerCase() !== macro.title.toLowerCase()) {
-        const existingMacro = await Macro.findOne({
-          createdBy: macro.createdBy, // Check against original creator, not current user
-          _id: { $ne: macro._id },
-          title: { $regex: `^${title.trim()}$`, $options: 'i' }
-        });
+    // ONLY owner or admin can update macros
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ message: 'You do not have permission to edit this macro' });
+    }
 
-        if (existingMacro) {
-          return res.status(400).json({ message: 'A macro with this title already exists' });
-        }
+    // Check if new title conflicts with another macro (check against original creator's macros)
+    if (title && title.trim().toLowerCase() !== macro.title.toLowerCase()) {
+      const existingMacro = await Macro.findOne({
+        createdBy: macro.createdBy, // Check against original creator, not current user
+        _id: { $ne: macro._id },
+        title: { $regex: `^${title.trim()}$`, $options: 'i' }
+      });
+
+      if (existingMacro) {
+        return res.status(400).json({ message: 'A macro with this title already exists' });
       }
-
-      if (title) macro.title = title.trim();
-      if (feedback !== undefined) macro.feedback = feedback;
-      if (scorecardData !== undefined) macro.scorecardData = scorecardData;
-      if (categories !== undefined) macro.categories = categories;
     }
 
-    // Anyone with access can update isPublic
-    if (isPublic !== undefined) {
-      macro.isPublic = !!isPublic;
-    }
+    // Update content
+    if (title) macro.title = title.trim();
+    if (feedback !== undefined) macro.feedback = feedback;
+    if (scorecardData !== undefined) macro.scorecardData = scorecardData;
+    if (categories !== undefined) macro.categories = categories;
+    if (isPublic !== undefined) macro.isPublic = !!isPublic;
 
     // Handle sharedWith updates
     if (sharedWith !== undefined && Array.isArray(sharedWith)) {
-      if (isOwner || isAdmin) {
-        // Owner or admin can fully replace sharedWith, need to handle cascade removal
-        const oldUserIds = macro.sharedWith.map(s => s.userId.toString());
-        const newUserIds = sharedWith;
+      // Owner or admin can fully replace sharedWith, need to handle cascade removal
+      const oldUserIds = macro.sharedWith.map(s => s.userId.toString());
+      const newUserIds = sharedWith;
 
-        // Find users being removed
-        const removedUserIds = oldUserIds.filter(uid => !newUserIds.includes(uid));
+      // Find users being removed
+      const removedUserIds = oldUserIds.filter(uid => !newUserIds.includes(uid));
 
-        // For cascade removal: find all users that were added by removed users
-        const cascadeRemove = (userIdToRemove) => {
-          const addedByThisUser = macro.sharedWith
-            .filter(s => s.addedBy.toString() === userIdToRemove)
-            .map(s => s.userId.toString());
+      // For cascade removal: find all users that were added by removed users
+      const cascadeRemove = (userIdToRemove) => {
+        const addedByThisUser = macro.sharedWith
+          .filter(s => s.addedBy.toString() === userIdToRemove)
+          .map(s => s.userId.toString());
 
-          // Recursively find users added by those users
-          let allToRemove = [userIdToRemove];
-          addedByThisUser.forEach(uid => {
-            if (!newUserIds.includes(uid)) {
-              allToRemove = allToRemove.concat(cascadeRemove(uid));
-            }
-          });
-          return allToRemove;
-        };
-
-        let allRemovedIds = [];
-        removedUserIds.forEach(uid => {
-          allRemovedIds = allRemovedIds.concat(cascadeRemove(uid));
-        });
-        allRemovedIds = [...new Set(allRemovedIds)]; // Remove duplicates
-
-        // Build new sharedWith array
-        const newSharedWith = [];
-        newUserIds.forEach(uid => {
-          // Check if this user already exists in sharedWith (not being removed)
-          const existing = macro.sharedWith.find(s =>
-            s.userId.toString() === uid && !allRemovedIds.includes(uid)
-          );
-          if (existing) {
-            newSharedWith.push(existing);
-          } else if (!allRemovedIds.includes(uid)) {
-            // New user being added by owner/admin (use macro creator as addedBy)
-            newSharedWith.push({
-              userId: new mongoose.Types.ObjectId(uid),
-              addedBy: isOwner ? userId : macro.createdBy
-            });
+        // Recursively find users added by those users
+        let allToRemove = [userIdToRemove];
+        addedByThisUser.forEach(uid => {
+          if (!newUserIds.includes(uid)) {
+            allToRemove = allToRemove.concat(cascadeRemove(uid));
           }
         });
+        return allToRemove;
+      };
 
-        macro.sharedWith = newSharedWith;
-      } else {
-        // Non-owner can only ADD new users (not remove)
-        const existingUserIds = macro.sharedWith.map(s => s.userId.toString());
-        const newUsers = sharedWith.filter(uid => !existingUserIds.includes(uid));
+      let allRemovedIds = [];
+      removedUserIds.forEach(uid => {
+        allRemovedIds = allRemovedIds.concat(cascadeRemove(uid));
+      });
+      allRemovedIds = [...new Set(allRemovedIds)]; // Remove duplicates
 
-        newUsers.forEach(uid => {
-          macro.sharedWith.push({
+      // Build new sharedWith array
+      const newSharedWith = [];
+      newUserIds.forEach(uid => {
+        // Check if this user already exists in sharedWith (not being removed)
+        const existing = macro.sharedWith.find(s =>
+          s.userId.toString() === uid && !allRemovedIds.includes(uid)
+        );
+        if (existing) {
+          newSharedWith.push(existing);
+        } else if (!allRemovedIds.includes(uid)) {
+          // New user being added by owner/admin (use macro creator as addedBy)
+          newSharedWith.push({
             userId: new mongoose.Types.ObjectId(uid),
-            addedBy: userId
+            addedBy: isOwner ? userId : macro.createdBy
           });
-        });
-      }
+        }
+      });
+
+      macro.sharedWith = newSharedWith;
     }
 
     await macro.save();
@@ -387,18 +367,24 @@ exports.updateMacro = async (req, res) => {
 
 // @desc    Delete macro
 // @route   DELETE /api/qa/macros/:id
-// @access  Private
+// @access  Private (only owner or admin can delete)
 exports.deleteMacro = async (req, res) => {
   try {
     const userId = req.user._id;
+    const userEmail = req.user.email;
+    const isAdmin = isMacroAdmin(userEmail);
 
-    const macro = await Macro.findOne({
-      _id: req.params.id,
-      createdBy: userId
-    });
+    const macro = await Macro.findById(req.params.id);
 
     if (!macro) {
       return res.status(404).json({ message: 'Macro not found' });
+    }
+
+    const isOwner = macro.createdBy.toString() === userId.toString();
+
+    // Only owner or admin can delete
+    if (!isOwner && !isAdmin) {
+      return res.status(403).json({ message: 'You do not have permission to delete this macro' });
     }
 
     await Macro.deleteOne({ _id: macro._id });
