@@ -3,6 +3,10 @@ const dotenv = require('dotenv');
 // Load environment variables FIRST, before anything else
 dotenv.config();
 
+// Fix DNS resolution for MongoDB Atlas on Windows
+const dns = require('dns');
+dns.setServers(['8.8.8.8', '8.8.4.4']);
+
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
@@ -196,6 +200,7 @@ const systemComponentRoutes = require('./routes/systemComponentRoutes');
 const maintenanceRoutes = require('./routes/maintenanceRoutes');
 const statusSubscriptionRoutes = require('./routes/statusSubscriptionRoutes');
 const rulesRoutes = require('./routes/rulesRoutes');
+const knowledgeBaseRoutes = require('./routes/knowledgeBaseRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -223,6 +228,7 @@ app.use('/api/system-components', systemComponentRoutes); // System component st
 app.use('/api/maintenance', maintenanceRoutes); // Scheduled maintenance
 app.use('/api/status-subscriptions', statusSubscriptionRoutes); // Status page subscriptions
 app.use('/api/qa/rules', rulesRoutes); // QA Rules (AI evaluation knowledge)
+app.use('/api/knowledge-base', knowledgeBaseRoutes); // Knowledge Base for customer support
 
 // Root route
 app.get('/', (req, res) => {
