@@ -646,6 +646,7 @@ exports.getAllTickets = async (req, res) => {
     const tickets = await Ticket.find(filter)
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email')
+      .populate('reviewHistory.reviewedBy', 'name email')
       .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
       .skip(skip)
       .limit(limitNum);
@@ -672,7 +673,8 @@ exports.getTicket = async (req, res) => {
   try {
     const ticket = await Ticket.findById(req.params.id)
       .populate('agent', 'name team position')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email')
+      .populate('reviewHistory.reviewedBy', 'name email');
 
     if (!ticket) {
       return res.status(404).json({ message: 'Ticket not found' });
@@ -4928,10 +4930,15 @@ exports.getReviewAnalytics = async (req, res) => {
   try {
     const { dateFrom, dateTo, createdBy } = req.query;
 
-    // Build filter for tickets that have been through review
+    // Build filter for tickets that have been actually reviewed (not just sent to review)
+    // Only include tickets where a reviewer has taken action (approved or denied)
     const filter = {
       originalReviewScore: { $ne: null },
-      reviewHistory: { $exists: true, $ne: [] }
+      reviewHistory: {
+        $elemMatch: {
+          action: { $in: ['approved', 'denied'] }
+        }
+      }
     };
 
     if (dateFrom || dateTo) {
@@ -4946,7 +4953,7 @@ exports.getReviewAnalytics = async (req, res) => {
 
     // Get all reviewed tickets
     const tickets = await Ticket.find(filter)
-      .populate('agent', 'name')
+      .populate('agent', 'name position')
       .populate('createdBy', 'name email')
       .populate('reviewHistory.reviewedBy', 'name email')
       .sort({ firstReviewDate: -1 });
@@ -4975,6 +4982,13 @@ exports.getReviewAnalytics = async (req, res) => {
       // Positive = improved, Negative = worsened
       const scoreDifference = (ticket.qualityScorePercent || 0) - (ticket.originalReviewScore || 0);
 
+      // Find the reviewer who did the approve/deny action
+      const reviewAction = ticket.reviewHistory?.find(h =>
+        h.action === 'approved' || h.action === 'denied'
+      );
+      const reviewerName = reviewAction?.reviewedBy?.name || reviewAction?.reviewedBy?.email || null;
+      const reviewerId = reviewAction?.reviewedBy?._id || null;
+
       graderStats[graderId].tickets.push({
         _id: ticket._id,
         ticketId: ticket.ticketId,
@@ -4984,7 +4998,17 @@ exports.getReviewAnalytics = async (req, res) => {
         scoreDifference,
         firstReviewDate: ticket.firstReviewDate,
         reviewHistory: ticket.reviewHistory,
-        additionalNote: ticket.additionalNote
+        additionalNote: ticket.additionalNote,
+        reviewerName,
+        reviewerId,
+        // Additional data for view modal
+        notes: ticket.notes,
+        feedback: ticket.feedback,
+        categories: ticket.categories,
+        scorecardValues: ticket.scorecardValues,
+        scorecardVariant: ticket.scorecardVariant,
+        dateEntered: ticket.dateEntered,
+        agentPosition: ticket.agent?.position
       });
 
       graderStats[graderId].totalTickets++;
