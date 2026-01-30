@@ -31,7 +31,20 @@ const blockSchema = new mongoose.Schema({
       'divider',
       'code',
       'image',
-      'table'
+      'table',
+      // New block types
+      'video',
+      'embed',
+      'bookmark',
+      'file',
+      'equation',
+      'button',
+      'table_of_contents',
+      'audio',
+      'pdf',
+      'breadcrumbs',
+      'synced_block',
+      'columns'
     ],
     required: true
   },
@@ -128,6 +141,37 @@ const kbPageSchema = new mongoose.Schema({
   sectionId: {
     type: String,
     default: null
+  },
+
+  // Tags
+  tags: [{
+    type: String,
+    lowercase: true,
+    trim: true
+  }],
+
+  // Permissions
+  permissions: {
+    visibility: {
+      type: String,
+      enum: ['private', 'workspace', 'public'],
+      default: 'workspace'
+    },
+    inheritFromParent: {
+      type: Boolean,
+      default: true
+    },
+    users: [{
+      user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      role: { type: String, enum: ['viewer', 'commenter', 'editor', 'admin'] }
+    }],
+    shareLink: {
+      enabled: { type: Boolean, default: false },
+      token: String,
+      expiresAt: Date,
+      allowComments: { type: Boolean, default: false },
+      allowDuplication: { type: Boolean, default: false }
+    }
   }
 }, {
   timestamps: true
@@ -141,6 +185,8 @@ kbPageSchema.index({ createdBy: 1 });
 
 // Text search index
 kbPageSchema.index({ title: 'text' });
+kbPageSchema.index({ tags: 1 });
+kbPageSchema.index({ 'permissions.visibility': 1 });
 
 // Generate slug from title if not provided
 kbPageSchema.pre('validate', function(next) {
@@ -163,7 +209,7 @@ kbPageSchema.statics.getTree = async function(includeUnpublished = false) {
   }
 
   const pages = await this.find(query)
-    .select('title slug icon parentPage order isSection sectionId')
+    .select('title slug icon parentPage order isSection sectionId tags')
     .sort({ order: 1 })
     .lean();
 

@@ -18,6 +18,7 @@ const configurePassport = require('./config/passport');
 const connectDB = require('./config/db');
 const seedAnnouncementsWorkspace = require('./utils/seedAnnouncements');
 const seedActiveIssuesWorkspace = require('./utils/seedActiveIssues');
+const { seedBuiltInTemplates } = require('./seeds/kbBuiltInTemplates');
 const User = require('./models/User');
 const cron = require('node-cron');
 const { analyzeAllAgents } = require('./scripts/analyzeAgentIssues');
@@ -27,6 +28,7 @@ connectDB().then(() => {
   // Seed public workspaces after DB connection
   seedAnnouncementsWorkspace();
   seedActiveIssuesWorkspace();
+  seedBuiltInTemplates();
 
   // Schedule weekly agent issues analysis - Every Monday at 6:00 AM
   cron.schedule('0 6 * * 1', async () => {
@@ -201,6 +203,7 @@ const maintenanceRoutes = require('./routes/maintenanceRoutes');
 const statusSubscriptionRoutes = require('./routes/statusSubscriptionRoutes');
 const rulesRoutes = require('./routes/rulesRoutes');
 const knowledgeBaseRoutes = require('./routes/knowledgeBaseRoutes');
+const kbExtendedRoutes = require('./routes/kbExtendedRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -229,6 +232,7 @@ app.use('/api/maintenance', maintenanceRoutes); // Scheduled maintenance
 app.use('/api/status-subscriptions', statusSubscriptionRoutes); // Status page subscriptions
 app.use('/api/qa/rules', rulesRoutes); // QA Rules (AI evaluation knowledge)
 app.use('/api/knowledge-base', knowledgeBaseRoutes); // Knowledge Base for customer support
+app.use('/api/knowledge-base', kbExtendedRoutes); // KB Extended: templates, versions, comments, search, sharing, analytics
 
 // Root route
 app.get('/', (req, res) => {

@@ -1,6 +1,7 @@
 const KBPage = require('../models/KBPage');
 const KBAdmin = require('../models/KBAdmin');
 const KBEditLog = require('../models/KBEditLog');
+const KBPageVersion = require('../models/KBPageVersion');
 const User = require('../models/User');
 
 const SUPER_ADMIN_EMAIL = 'filipkozomara@mebit.io';
@@ -160,6 +161,23 @@ exports.updatePage = async (req, res) => {
       return res.status(404).json({ message: 'Page not found' });
     }
 
+    // Auto-create version snapshot before applying updates
+    try {
+      const changesSummary = [];
+      if (updates.title && updates.title !== page.title) changesSummary.push('title');
+      if (updates.blocks) changesSummary.push('content');
+      if (updates.dropdowns) changesSummary.push('dropdowns');
+      if (updates.icon && updates.icon !== page.icon) changesSummary.push('icon');
+      if (updates.coverImage !== undefined) changesSummary.push('cover');
+      const summary = changesSummary.length > 0
+        ? `Changed: ${changesSummary.join(', ')}`
+        : 'Page updated';
+      await KBPageVersion.createVersion(page, req.user._id, summary);
+    } catch (versionError) {
+      console.error('Error creating page version:', versionError);
+      // Don't block the update if version creation fails
+    }
+
     // Store before state for logging
     const before = {
       title: page.title,
@@ -169,7 +187,7 @@ exports.updatePage = async (req, res) => {
     };
 
     // Update allowed fields
-    const allowedUpdates = ['title', 'icon', 'coverImage', 'parentPage', 'blocks', 'dropdowns', 'isPublished', 'isSection', 'sectionId'];
+    const allowedUpdates = ['title', 'icon', 'coverImage', 'parentPage', 'blocks', 'dropdowns', 'isPublished', 'isSection', 'sectionId', 'tags'];
     allowedUpdates.forEach(field => {
       if (updates[field] !== undefined) {
         page[field] = updates[field];
