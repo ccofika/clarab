@@ -2768,6 +2768,8 @@ exports.reassignTicket = async (req, res) => {
     const { newGraderId } = req.body;
     const ticketId = req.params.id;
 
+    logger.info(`[REASSIGN-TICKET] Starting single ticket reassign. TicketID: ${ticketId}, NewGraderID: ${newGraderId}, RequestedBy: ${req.user.email}`);
+
     if (!newGraderId) {
       return res.status(400).json({ message: 'New grader ID is required' });
     }
@@ -2777,21 +2779,35 @@ exports.reassignTicket = async (req, res) => {
     // Verify new grader exists and is a valid QA grader
     const newGrader = await User.findById(newGraderId);
     if (!newGrader) {
+      logger.error(`[REASSIGN-TICKET] New grader not found: ${newGraderId}`);
       return res.status(404).json({ message: 'Grader not found' });
     }
 
     const qaGraderEmails = await getQAGraderEmails();
     if (!qaGraderEmails.includes(newGrader.email)) {
+      logger.error(`[REASSIGN-TICKET] Target user ${newGrader.email} is not a valid QA grader`);
       return res.status(400).json({ message: 'Target user is not a valid QA grader' });
     }
 
     // Find and update the ticket
-    const ticket = await Ticket.findById(ticketId);
+    const ticket = await Ticket.findById(ticketId).populate('agent', 'name');
     if (!ticket) {
+      logger.error(`[REASSIGN-TICKET] Ticket not found: ${ticketId}`);
       return res.status(404).json({ message: 'Ticket not found' });
     }
 
     const oldGraderId = ticket.createdBy;
+
+    // Auto-assign: ensure the agent is in the new grader's activeForUsers
+    if (ticket.agent) {
+      const agent = await Agent.findById(ticket.agent._id || ticket.agent);
+      if (agent && !agent.activeForUsers.some(id => id.equals(newGraderId))) {
+        agent.activeForUsers.push(newGraderId);
+        await agent.save();
+        logger.info(`[REASSIGN-TICKET] Auto-assigned agent "${agent.name}" to grader ${newGrader.email} (was not in activeForUsers)`);
+      }
+    }
+
     ticket.createdBy = newGraderId;
     await ticket.save();
 
@@ -2800,14 +2816,14 @@ exports.reassignTicket = async (req, res) => {
       .populate('agent', 'name team position')
       .populate('createdBy', 'name email');
 
-    logger.info(`Ticket ${ticket.ticketId} reassigned from ${oldGraderId} to ${newGraderId} by ${req.user.email}`);
+    logger.info(`[REASSIGN-TICKET] SUCCESS - Ticket ${ticket.ticketId} (agent: ${ticket.agent?.name}) reassigned from ${oldGraderId} to ${newGrader.email} by ${req.user.email}`);
 
     res.json({
       message: 'Ticket reassigned successfully',
       ticket: updatedTicket
     });
   } catch (error) {
-    logger.error('Error reassigning ticket:', error);
+    logger.error('[REASSIGN-TICKET] Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -2818,6 +2834,8 @@ exports.reassignTicket = async (req, res) => {
 exports.bulkReassignTickets = async (req, res) => {
   try {
     const { ticketIds, newGraderId } = req.body;
+
+    logger.info(`[BULK-REASSIGN] Starting bulk reassign. TicketCount: ${ticketIds?.length}, NewGraderID: ${newGraderId}, RequestedBy: ${req.user.email}`);
 
     if (!ticketIds || !Array.isArray(ticketIds) || ticketIds.length === 0) {
       return res.status(400).json({ message: 'Ticket IDs are required' });
@@ -2832,12 +2850,33 @@ exports.bulkReassignTickets = async (req, res) => {
     // Verify new grader exists and is a valid QA grader
     const newGrader = await User.findById(newGraderId);
     if (!newGrader) {
+      logger.error(`[BULK-REASSIGN] New grader not found: ${newGraderId}`);
       return res.status(404).json({ message: 'Grader not found' });
     }
 
     const qaGraderEmails = await getQAGraderEmails();
     if (!qaGraderEmails.includes(newGrader.email)) {
+      logger.error(`[BULK-REASSIGN] Target user ${newGrader.email} is not a valid QA grader`);
       return res.status(400).json({ message: 'Target user is not a valid QA grader' });
+    }
+
+    // Auto-assign: find all unique agents for these tickets and ensure they're in new grader's activeForUsers
+    const tickets = await Ticket.find({ _id: { $in: ticketIds } }).select('agent');
+    const uniqueAgentIds = [...new Set(tickets.map(t => t.agent?.toString()).filter(Boolean))];
+
+    if (uniqueAgentIds.length > 0) {
+      const agents = await Agent.find({ _id: { $in: uniqueAgentIds } });
+      let autoAssignedCount = 0;
+      for (const agent of agents) {
+        if (!agent.activeForUsers.some(id => id.equals(newGraderId))) {
+          agent.activeForUsers.push(newGraderId);
+          await agent.save();
+          autoAssignedCount++;
+        }
+      }
+      if (autoAssignedCount > 0) {
+        logger.info(`[BULK-REASSIGN] Auto-assigned ${autoAssignedCount} agents to grader ${newGrader.email}`);
+      }
     }
 
     // Update all tickets
@@ -2846,14 +2885,14 @@ exports.bulkReassignTickets = async (req, res) => {
       { createdBy: newGraderId }
     );
 
-    logger.info(`Bulk reassigned ${result.modifiedCount} tickets to ${newGrader.email} by ${req.user.email}`);
+    logger.info(`[BULK-REASSIGN] SUCCESS - Bulk reassigned ${result.modifiedCount} tickets to ${newGrader.email} by ${req.user.email}`);
 
     res.json({
       message: `Successfully reassigned ${result.modifiedCount} tickets`,
       modifiedCount: result.modifiedCount
     });
   } catch (error) {
-    logger.error('Error bulk reassigning tickets:', error);
+    logger.error('[BULK-REASSIGN] Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -2896,6 +2935,8 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
   try {
     const { agentId, fromGraderId, toGraderId, moveTickets = true } = req.body;
 
+    logger.info(`[REASSIGN-AGENT] Starting agent reassign. AgentID: ${agentId}, FromGrader: ${fromGraderId}, ToGrader: ${toGraderId}, MoveTickets: ${moveTickets}, RequestedBy: ${req.user.email}`);
+
     if (!agentId || !fromGraderId || !toGraderId) {
       return res.status(400).json({ message: 'Agent ID, source grader ID, and target grader ID are required' });
     }
@@ -2909,19 +2950,24 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
     ]);
 
     if (!fromGrader || !toGrader) {
+      logger.error(`[REASSIGN-AGENT] Grader not found. FromGrader exists: ${!!fromGrader}, ToGrader exists: ${!!toGrader}`);
       return res.status(404).json({ message: 'One or both graders not found' });
     }
 
     const qaGraderEmails = await getQAGraderEmails();
     if (!qaGraderEmails.includes(fromGrader.email) || !qaGraderEmails.includes(toGrader.email)) {
+      logger.error(`[REASSIGN-AGENT] Invalid QA grader. FromGrader: ${fromGrader.email} (valid: ${qaGraderEmails.includes(fromGrader.email)}), ToGrader: ${toGrader.email} (valid: ${qaGraderEmails.includes(toGrader.email)})`);
       return res.status(400).json({ message: 'Both users must be valid QA graders' });
     }
 
     // Get the agent
     const agent = await Agent.findById(agentId);
     if (!agent) {
+      logger.error(`[REASSIGN-AGENT] Agent not found: ${agentId}`);
       return res.status(404).json({ message: 'Agent not found' });
     }
+
+    logger.info(`[REASSIGN-AGENT] Agent "${agent.name}" - Current activeForUsers: [${agent.activeForUsers.map(id => id.toString())}]`);
 
     // Remove from source grader's activeForUsers
     agent.activeForUsers = agent.activeForUsers.filter(
@@ -2935,6 +2981,8 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
 
     await agent.save();
 
+    logger.info(`[REASSIGN-AGENT] Agent "${agent.name}" - Updated activeForUsers: [${agent.activeForUsers.map(id => id.toString())}]`);
+
     // Optionally move tickets
     let ticketsMoved = 0;
     if (moveTickets) {
@@ -2943,9 +2991,10 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
         { createdBy: toGraderId }
       );
       ticketsMoved = result.modifiedCount;
+      logger.info(`[REASSIGN-AGENT] Moved ${ticketsMoved} tickets from ${fromGrader.email} to ${toGrader.email}`);
     }
 
-    logger.info(`Agent ${agent.name} reassigned from ${fromGrader.email} to ${toGrader.email} (${ticketsMoved} tickets moved) by ${req.user.email}`);
+    logger.info(`[REASSIGN-AGENT] SUCCESS - Agent "${agent.name}" reassigned from ${fromGrader.email} to ${toGrader.email} (${ticketsMoved} tickets moved) by ${req.user.email}`);
 
     res.json({
       message: 'Agent reassigned successfully',
@@ -2953,7 +3002,7 @@ exports.reassignAgentBetweenGraders = async (req, res) => {
       ticketsMoved
     });
   } catch (error) {
-    logger.error('Error reassigning agent:', error);
+    logger.error('[REASSIGN-AGENT] Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
@@ -5039,6 +5088,197 @@ exports.getReviewAnalytics = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error fetching review analytics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// BACKUP & REASSIGN ALL GRADER TICKETS
+// ============================================
+
+// @desc    Backup all non-archived tickets for a specific grader
+// @route   POST /api/qa/active-overview/backup-grader-tickets
+// @access  Private (Admin)
+exports.backupGraderTickets = async (req, res) => {
+  try {
+    const { graderId } = req.body;
+
+    if (!graderId) {
+      return res.status(400).json({ message: 'Grader ID is required' });
+    }
+
+    const User = require('../models/User');
+    const fs = require('fs');
+    const path = require('path');
+
+    const grader = await User.findById(graderId).select('name email');
+    if (!grader) {
+      return res.status(404).json({ message: 'Grader not found' });
+    }
+
+    logger.info(`[BACKUP] Starting backup for grader: ${grader.name} (${grader.email})`);
+
+    // Find all non-archived tickets for this grader
+    const tickets = await Ticket.find({
+      createdBy: graderId,
+      isArchived: false
+    })
+      .populate('agent', 'name team position maestroName')
+      .lean();
+
+    logger.info(`[BACKUP] Found ${tickets.length} non-archived tickets for ${grader.name}`);
+
+    // Create backup directory
+    const backupDir = path.join(__dirname, '..', 'backups');
+    if (!fs.existsSync(backupDir)) {
+      fs.mkdirSync(backupDir, { recursive: true });
+    }
+
+    // Create backup file
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const safeGraderName = grader.name.replace(/\s+/g, '_');
+    const backupFileName = `backup_${safeGraderName}_${timestamp}.json`;
+    const backupPath = path.join(backupDir, backupFileName);
+
+    const backupData = {
+      grader: {
+        _id: grader._id,
+        name: grader.name,
+        email: grader.email
+      },
+      backupDate: new Date().toISOString(),
+      ticketCount: tickets.length,
+      tickets: tickets.map(t => ({
+        _id: t._id,
+        ticketId: t.ticketId,
+        agent: t.agent,
+        shortDescription: t.shortDescription,
+        status: t.status,
+        dateEntered: t.dateEntered,
+        notes: t.notes,
+        feedback: t.feedback,
+        qualityScorePercent: t.qualityScorePercent,
+        lastModified: t.lastModified,
+        gradedDate: t.gradedDate,
+        createdBy: t.createdBy,
+        categories: t.categories,
+        priority: t.priority,
+        tags: t.tags,
+        weekNumber: t.weekNumber,
+        weekYear: t.weekYear,
+        scorecardVariant: t.scorecardVariant,
+        scorecardValues: t.scorecardValues,
+        additionalNote: t.additionalNote,
+        reviewHistory: t.reviewHistory,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt
+      }))
+    };
+
+    fs.writeFileSync(backupPath, JSON.stringify(backupData, null, 2));
+
+    logger.info(`[BACKUP] SUCCESS - Backup created at: ${backupPath} (${tickets.length} tickets)`);
+
+    res.json({
+      message: `Backup created successfully for ${grader.name}`,
+      backupFile: backupFileName,
+      ticketCount: tickets.length
+    });
+  } catch (error) {
+    logger.error('[BACKUP] Error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Reassign ALL non-archived tickets from one grader to another (Admin only)
+// @route   POST /api/qa/active-overview/reassign-grader-tickets
+// @access  Private (Admin)
+exports.reassignAllGraderTickets = async (req, res) => {
+  try {
+    const { fromGraderId, toGraderId } = req.body;
+
+    logger.info(`[REASSIGN-ALL-GRADER] Starting full grader reassign. FromGrader: ${fromGraderId}, ToGrader: ${toGraderId}, RequestedBy: ${req.user.email}`);
+
+    if (!fromGraderId || !toGraderId) {
+      return res.status(400).json({ message: 'Both source and target grader IDs are required' });
+    }
+
+    if (fromGraderId === toGraderId) {
+      return res.status(400).json({ message: 'Source and target graders must be different' });
+    }
+
+    const User = require('../models/User');
+
+    // Verify graders exist and are valid
+    const [fromGrader, toGrader] = await Promise.all([
+      User.findById(fromGraderId),
+      User.findById(toGraderId)
+    ]);
+
+    if (!fromGrader || !toGrader) {
+      logger.error(`[REASSIGN-ALL-GRADER] Grader not found. FromGrader exists: ${!!fromGrader}, ToGrader exists: ${!!toGrader}`);
+      return res.status(404).json({ message: 'One or both graders not found' });
+    }
+
+    const qaGraderEmails = await getQAGraderEmails();
+    if (!qaGraderEmails.includes(fromGrader.email) || !qaGraderEmails.includes(toGrader.email)) {
+      logger.error(`[REASSIGN-ALL-GRADER] Invalid QA grader. FromGrader: ${fromGrader.email}, ToGrader: ${toGrader.email}`);
+      return res.status(400).json({ message: 'Both users must be valid QA graders' });
+    }
+
+    // Step 1: Find all non-archived tickets from the source grader
+    const ticketsToMove = await Ticket.find({
+      createdBy: fromGraderId,
+      isArchived: false
+    }).populate('agent', 'name').lean();
+
+    logger.info(`[REASSIGN-ALL-GRADER] Found ${ticketsToMove.length} non-archived tickets from ${fromGrader.email}`);
+
+    if (ticketsToMove.length === 0) {
+      return res.json({
+        message: `No non-archived tickets found for ${fromGrader.name}`,
+        ticketsMoved: 0,
+        agentsAutoAssigned: 0
+      });
+    }
+
+    // Step 2: Find all unique agents for these tickets and auto-assign to the new grader
+    const uniqueAgentIds = [...new Set(ticketsToMove.map(t => t.agent?._id?.toString()).filter(Boolean))];
+    logger.info(`[REASSIGN-ALL-GRADER] Found ${uniqueAgentIds.length} unique agents in tickets: [${ticketsToMove.map(t => t.agent?.name).filter((v, i, a) => a.indexOf(v) === i).join(', ')}]`);
+
+    let agentsAutoAssigned = 0;
+    for (const agentId of uniqueAgentIds) {
+      const agent = await Agent.findById(agentId);
+      if (agent) {
+        const wasAlreadyAssigned = agent.activeForUsers.some(id => id.equals(toGraderId));
+        if (!wasAlreadyAssigned) {
+          agent.activeForUsers.push(toGraderId);
+          await agent.save();
+          agentsAutoAssigned++;
+          logger.info(`[REASSIGN-ALL-GRADER] Auto-assigned agent "${agent.name}" to ${toGrader.email}`);
+        } else {
+          logger.info(`[REASSIGN-ALL-GRADER] Agent "${agent.name}" already assigned to ${toGrader.email}`);
+        }
+      }
+    }
+
+    // Step 3: Reassign all tickets
+    const result = await Ticket.updateMany(
+      { createdBy: fromGraderId, isArchived: false },
+      { createdBy: toGraderId }
+    );
+
+    logger.info(`[REASSIGN-ALL-GRADER] SUCCESS - Moved ${result.modifiedCount} tickets from ${fromGrader.email} to ${toGrader.email}, auto-assigned ${agentsAutoAssigned} agents. RequestedBy: ${req.user.email}`);
+
+    res.json({
+      message: `Successfully reassigned ${result.modifiedCount} tickets from ${fromGrader.name} to ${toGrader.name}`,
+      ticketsMoved: result.modifiedCount,
+      agentsAutoAssigned,
+      fromGrader: fromGrader.name,
+      toGrader: toGrader.name
+    });
+  } catch (error) {
+    logger.error('[REASSIGN-ALL-GRADER] Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

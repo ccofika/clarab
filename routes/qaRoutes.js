@@ -79,6 +79,9 @@ const {
   getStaleTickets,
   getScoreComparison,
   parseExcelAssignments,
+  // Backup & Reassign All Grader Tickets
+  backupGraderTickets,
+  reassignAllGraderTickets,
   // Grade button click tracking
   recordGradeClick,
   getWeeklyGradeClicks,
@@ -549,6 +552,12 @@ router.get('/active-overview/score-comparison', allAgentsAdminAuth, getScoreComp
 
 // Import agent assignments from Excel file
 router.post('/active-overview/import-excel', allAgentsAdminAuth, excelUpload.single('file'), parseExcelAssignments);
+
+// Backup grader tickets (creates JSON backup file)
+router.post('/active-overview/backup-grader-tickets', allAgentsAdminAuth, backupGraderTickets);
+
+// Reassign ALL non-archived tickets from one grader to another (with auto agent assignment)
+router.post('/active-overview/reassign-grader-tickets', allAgentsAdminAuth, reassignAllGraderTickets);
 
 // ============================================
 // GRADE BUTTON CLICK TRACKING

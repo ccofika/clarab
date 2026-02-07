@@ -18,20 +18,26 @@ exports.getAgentAssignments = async (req, res) => {
   }
 };
 
-// Get active assignment for an agent (current week)
-// Returns any assignment for the current week, even if completed
-// (so we can add more tickets to it)
+// Get active assignment for an agent (current week or most recent)
+// Returns the current week's assignment if it exists, otherwise the most recent one
+// This ensures the modal always shows when ANY assignment exists for this agent
 exports.getActiveAssignment = async (req, res) => {
   try {
     const { agentId } = req.params;
     const weekId = QAAssignment.getCurrentWeekId();
 
-    // Find any assignment for this week (regardless of status)
-    // This allows adding tickets to an assignment even after it was completed
-    const assignment = await QAAssignment.findOne({
+    // First try current week
+    let assignment = await QAAssignment.findOne({
       agentId,
       weekId
     }).lean();
+
+    // If no current week assignment, find the most recent one (any week)
+    if (!assignment) {
+      assignment = await QAAssignment.findOne({
+        agentId
+      }).sort({ createdAt: -1 }).lean();
+    }
 
     res.json({ assignment });
   } catch (error) {
