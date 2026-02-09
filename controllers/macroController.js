@@ -14,6 +14,37 @@ const isMacroAdmin = (user) => {
   return MACRO_ADMIN_ROLES.includes(user?.role);
 };
 
+// Helper to migrate legacy fields to new structure
+// Old macros have 'feedback' and 'scorecardData' fields which should become 'bad' versions
+const migrateLegacyFeedback = (macroObj) => {
+  // If macro has old 'feedback' field but no badFeedback, migrate it
+  if (macroObj.feedback && !macroObj.badFeedback) {
+    macroObj.badFeedback = macroObj.feedback;
+  }
+  // If macro has old 'scorecardData' field but no badScorecardData, migrate it
+  if (macroObj.scorecardData && Object.keys(macroObj.scorecardData).length > 0 &&
+      (!macroObj.badScorecardData || Object.keys(macroObj.badScorecardData).length === 0)) {
+    macroObj.badScorecardData = macroObj.scorecardData;
+  }
+  // Ensure goodFeedback has a value (empty string if not set)
+  if (!macroObj.goodFeedback) {
+    macroObj.goodFeedback = '';
+  }
+  // Ensure badFeedback has a value
+  if (!macroObj.badFeedback) {
+    macroObj.badFeedback = '';
+  }
+  // Ensure goodScorecardData has a value
+  if (!macroObj.goodScorecardData) {
+    macroObj.goodScorecardData = {};
+  }
+  // Ensure badScorecardData has a value
+  if (!macroObj.badScorecardData) {
+    macroObj.badScorecardData = {};
+  }
+  return macroObj;
+};
+
 // @desc    Get all macros for current user (own + public + shared with user)
 // @route   GET /api/qa/macros?creatorId=xxx (optional, admin only)
 // @access  Private
@@ -49,10 +80,13 @@ exports.getAllMacros = async (req, res) => {
         .sort({ usageCount: -1, title: 1 });
     }
 
-    // Add ownership info to each macro
+    // Add ownership info to each macro and migrate legacy feedback
     const macrosWithOwnership = macros.map(macro => {
-      const macroObj = macro.toObject();
+      let macroObj = macro.toObject();
       const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+
+      // Migrate legacy feedback field
+      macroObj = migrateLegacyFeedback(macroObj);
 
       // For admins viewing others' macros via creatorId filter, grant edit access
       // but keep isOwner false so "Created by" still shows the original creator
@@ -104,8 +138,12 @@ exports.getMacro = async (req, res) => {
       return res.status(404).json({ message: 'Macro not found' });
     }
 
-    const macroObj = macro.toObject();
+    let macroObj = macro.toObject();
     const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+
+    // Migrate legacy feedback field
+    macroObj = migrateLegacyFeedback(macroObj);
+
     macroObj.isOwner = isActualOwner;
     macroObj.isSharedWithMe = !isActualOwner && !macro.isPublic &&
       macro.sharedWith.some(s => s.userId.toString() === userId.toString());
@@ -163,10 +201,14 @@ exports.searchMacros = async (req, res) => {
       .sort({ usageCount: -1, title: 1 })
       .limit(20);
 
-    // Add ownership info to each macro
+    // Add ownership info to each macro and migrate legacy feedback
     const macrosWithOwnership = macros.map(macro => {
-      const macroObj = macro.toObject();
+      let macroObj = macro.toObject();
       const isActualOwner = macro.createdBy._id.toString() === userId.toString();
+
+      // Migrate legacy feedback field
+      macroObj = migrateLegacyFeedback(macroObj);
+
       macroObj.isOwner = isActualOwner;
       macroObj.isSharedWithMe = !isActualOwner && !macro.isPublic &&
         macro.sharedWith.some(s => s.userId.toString() === userId.toString());
@@ -192,10 +234,10 @@ exports.searchMacros = async (req, res) => {
 exports.createMacro = async (req, res) => {
   try {
     const userId = req.user._id;
-    const { title, feedback, scorecardData, categories, isPublic, sharedWith } = req.body;
+    const { title, goodFeedback, badFeedback, goodScorecardData, badScorecardData, categories, isPublic, sharedWith } = req.body;
 
-    if (!title || !feedback) {
-      return res.status(400).json({ message: 'Title and feedback are required' });
+    if (!title || !goodFeedback || !badFeedback) {
+      return res.status(400).json({ message: 'Title, good feedback, and bad feedback are required' });
     }
 
     // Check if macro with same title already exists for this user
@@ -210,14 +252,18 @@ exports.createMacro = async (req, res) => {
 
     const macroData = {
       title: title.trim(),
-      feedback,
+      goodFeedback,
+      badFeedback,
       createdBy: userId,
       isPublic: !!isPublic
     };
 
     // Add optional scorecard data if provided
-    if (scorecardData && typeof scorecardData === 'object') {
-      macroData.scorecardData = scorecardData;
+    if (goodScorecardData && typeof goodScorecardData === 'object') {
+      macroData.goodScorecardData = goodScorecardData;
+    }
+    if (badScorecardData && typeof badScorecardData === 'object') {
+      macroData.badScorecardData = badScorecardData;
     }
 
     // Add optional categories if provided
@@ -257,7 +303,7 @@ exports.updateMacro = async (req, res) => {
     const userId = req.user._id;
     const userEmail = req.user.email;
     const isAdmin = isMacroAdmin(req.user);
-    const { title, feedback, scorecardData, categories, isPublic, sharedWith } = req.body;
+    const { title, goodFeedback, badFeedback, goodScorecardData, badScorecardData, categories, isPublic, sharedWith } = req.body;
 
     // Find the macro
     const macro = await Macro.findById(req.params.id);
@@ -288,8 +334,10 @@ exports.updateMacro = async (req, res) => {
 
     // Update content
     if (title) macro.title = title.trim();
-    if (feedback !== undefined) macro.feedback = feedback;
-    if (scorecardData !== undefined) macro.scorecardData = scorecardData;
+    if (goodFeedback !== undefined) macro.goodFeedback = goodFeedback;
+    if (badFeedback !== undefined) macro.badFeedback = badFeedback;
+    if (goodScorecardData !== undefined) macro.goodScorecardData = goodScorecardData;
+    if (badScorecardData !== undefined) macro.badScorecardData = badScorecardData;
     if (categories !== undefined) macro.categories = categories;
     if (isPublic !== undefined) macro.isPublic = !!isPublic;
 
@@ -348,7 +396,11 @@ exports.updateMacro = async (req, res) => {
     await macro.save();
     await macro.populate('createdBy', 'name email');
 
-    const macroObj = macro.toObject();
+    let macroObj = macro.toObject();
+
+    // Migrate legacy feedback field
+    macroObj = migrateLegacyFeedback(macroObj);
+
     macroObj.isOwner = isOwner;
     macroObj.isSharedWithMe = !isOwner && !macro.isPublic &&
       macro.sharedWith.some(s => s.userId.toString() === userId.toString());
@@ -438,7 +490,11 @@ exports.recordMacroUsage = async (req, res) => {
     await macro.save();
     await macro.populate('createdBy', 'name email');
 
-    const macroObj = macro.toObject();
+    let macroObj = macro.toObject();
+
+    // Migrate legacy feedback field
+    macroObj = migrateLegacyFeedback(macroObj);
+
     macroObj.isOwner = macro.createdBy._id.toString() === userId.toString();
 
     res.json(macroObj);
@@ -779,7 +835,7 @@ exports.getMacroSuggestions = async (req, res) => {
         { 'sharedWith.userId': userId }
       ]
     })
-      .select('title feedback categories usageCount scorecardData createdBy')
+      .select('title feedback goodFeedback badFeedback categories usageCount scorecardData goodScorecardData badScorecardData createdBy')
       .populate('createdBy', 'name')
       .sort({ usageCount: -1 })
       .limit(5)
@@ -810,8 +866,12 @@ exports.getMacroSuggestions = async (req, res) => {
         $project: {
           title: 1,
           feedback: 1,
+          goodFeedback: 1,
+          badFeedback: 1,
           categories: 1,
           scorecardData: 1,
+          goodScorecardData: 1,
+          badScorecardData: 1,
           userUsageCount: 1
         }
       }
@@ -830,8 +890,12 @@ exports.getMacroSuggestions = async (req, res) => {
           _id: '$_id',
           title: { $first: '$title' },
           feedback: { $first: '$feedback' },
+          goodFeedback: { $first: '$goodFeedback' },
+          badFeedback: { $first: '$badFeedback' },
           categories: { $first: '$categories' },
           scorecardData: { $first: '$scorecardData' },
+          goodScorecardData: { $first: '$goodScorecardData' },
+          badScorecardData: { $first: '$badScorecardData' },
           weeklyUsage: { $sum: 1 }
         }
       },
@@ -840,31 +904,46 @@ exports.getMacroSuggestions = async (req, res) => {
     ]);
 
     res.json({
-      suggestions: categorySuggestions.map(m => ({
-        _id: m._id,
-        title: m.title,
-        feedback: m.feedback,
-        categories: m.categories,
-        scorecardData: m.scorecardData,
-        usageCount: m.usageCount,
-        createdBy: m.createdBy?.name || 'Unknown'
-      })),
-      frequentlyUsed: frequentlyUsed.map(m => ({
-        _id: m._id,
-        title: m.title,
-        feedback: m.feedback,
-        categories: m.categories,
-        scorecardData: m.scorecardData,
-        userUsageCount: m.userUsageCount
-      })),
-      teamFavorites: teamFavorites.map(m => ({
-        _id: m._id,
-        title: m.title,
-        feedback: m.feedback,
-        categories: m.categories,
-        scorecardData: m.scorecardData,
-        weeklyUsage: m.weeklyUsage
-      }))
+      suggestions: categorySuggestions.map(m => {
+        const migrated = migrateLegacyFeedback(m);
+        return {
+          _id: m._id,
+          title: m.title,
+          goodFeedback: migrated.goodFeedback,
+          badFeedback: migrated.badFeedback,
+          goodScorecardData: migrated.goodScorecardData,
+          badScorecardData: migrated.badScorecardData,
+          categories: m.categories,
+          usageCount: m.usageCount,
+          createdBy: m.createdBy?.name || 'Unknown'
+        };
+      }),
+      frequentlyUsed: frequentlyUsed.map(m => {
+        const migrated = migrateLegacyFeedback(m);
+        return {
+          _id: m._id,
+          title: m.title,
+          goodFeedback: migrated.goodFeedback,
+          badFeedback: migrated.badFeedback,
+          goodScorecardData: migrated.goodScorecardData,
+          badScorecardData: migrated.badScorecardData,
+          categories: m.categories,
+          userUsageCount: m.userUsageCount
+        };
+      }),
+      teamFavorites: teamFavorites.map(m => {
+        const migrated = migrateLegacyFeedback(m);
+        return {
+          _id: m._id,
+          title: m.title,
+          goodFeedback: migrated.goodFeedback,
+          badFeedback: migrated.badFeedback,
+          goodScorecardData: migrated.goodScorecardData,
+          badScorecardData: migrated.badScorecardData,
+          categories: m.categories,
+          weeklyUsage: m.weeklyUsage
+        };
+      })
     });
   } catch (error) {
     logger.error('Error fetching macro suggestions:', error);

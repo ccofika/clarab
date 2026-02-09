@@ -8,13 +8,32 @@ const macroSchema = new mongoose.Schema({
     trim: true,
     maxlength: [200, 'Title cannot exceed 200 characters']
   },
-  // The feedback content (HTML - same format as ticket.feedback)
-  feedback: {
+  // The feedback content for "Good" ticket (HTML - same format as ticket.feedback)
+  goodFeedback: {
     type: String,
-    required: [true, 'Macro feedback content is required']
+    default: ''
   },
-  // Scorecard data per agent position
-  // Keys are agent positions (e.g., 'Junior Scorecard'), values are { values: Object, variant: String|null }
+  // The feedback content for "Bad" ticket (HTML - same format as ticket.feedback)
+  badFeedback: {
+    type: String,
+    default: ''
+  },
+  // LEGACY: Old feedback field - will be migrated to badFeedback
+  feedback: {
+    type: String
+  },
+  // Scorecard data for "Good" ticket per agent position
+  // Keys are agent positions (e.g., 'Junior Scorecard'), values are { variantKey: { field: value } }
+  goodScorecardData: {
+    type: Object,
+    default: {}
+  },
+  // Scorecard data for "Bad" ticket per agent position
+  badScorecardData: {
+    type: Object,
+    default: {}
+  },
+  // LEGACY: Old scorecardData field - will be migrated to badScorecardData
   scorecardData: {
     type: Object,
     default: {}
