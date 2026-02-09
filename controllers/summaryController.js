@@ -80,7 +80,7 @@ const generateSummary = async (req, res) => {
     }
 
     // Determine shift based on ticket activity times
-    const shift = Summary.determineShift(dayTickets);
+    const shift = Summary.determineShift(dayTickets, startOfDay, endOfDay);
 
     // Check if summary already exists for this date and shift
     const existingSummary = await Summary.findOne({
@@ -119,7 +119,8 @@ const generateSummary = async (req, res) => {
           agentName,
           selectedOnly: [],
           gradedOnly: [],
-          selectedAndGraded: []
+          selectedAndGraded: [],
+          draftOnly: []
         };
       }
 
@@ -132,6 +133,8 @@ const generateSummary = async (req, res) => {
         agentGroups[agentId].gradedOnly.push(ticket);
       } else if (selectedOnDay && ticket.status === 'Selected') {
         agentGroups[agentId].selectedOnly.push(ticket);
+      } else if (selectedOnDay && ticket.status === 'Draft') {
+        agentGroups[agentId].draftOnly.push(ticket);
       }
     });
 
@@ -157,17 +160,26 @@ const generateSummary = async (req, res) => {
     let totalSelected = 0;
     let totalGraded = 0;
     let totalBoth = 0;
+    let totalDraft = 0;
 
     for (const [agentId, group] of Object.entries(agentGroups)) {
       const weeklyTotal = weeklyTotalsPerAgent[agentId] || 0;
 
-      const selectedCount = group.selectedOnly.length;
-      const gradedCount = group.gradedOnly.length;
+      const selectedOnlyCount = group.selectedOnly.length;
+      const gradedOnlyCount = group.gradedOnly.length;
       const bothCount = group.selectedAndGraded.length;
+      const draftCount = group.draftOnly.length;
 
-      totalSelected += selectedCount;
-      totalGraded += gradedCount;
+      // For display purposes: tickets that are both selected AND graded should count in BOTH categories
+      // displaySelectedCount = tickets that were selected today (selectedOnly + both)
+      // displayGradedCount = tickets that were graded today (gradedOnly + both)
+      const displaySelectedCount = selectedOnlyCount + bothCount;
+      const displayGradedCount = gradedOnlyCount + bothCount;
+
+      totalSelected += selectedOnlyCount;
+      totalGraded += gradedOnlyCount;
       totalBoth += bothCount;
+      totalDraft += draftCount;
 
       const allGradedTickets = [...group.gradedOnly, ...group.selectedAndGraded];
 
@@ -176,51 +188,39 @@ const generateSummary = async (req, res) => {
       const overallScore = calculateAverageScore(weeklyGradedTickets);
 
       // Today's graded count for comparison
-      const todayGradedCount = gradedCount + bothCount;
+      const todayGradedCount = gradedOnlyCount + bothCount;
 
       // Only show "ukupno" if there are tickets from previous days (weeklyTotal > todayGradedCount)
       const showUkupno = weeklyTotal > todayGradedCount;
       const ukupnoText = showUkupno ? ` ukupno ${weeklyTotal}` : '';
 
+      // Draft suffix for title
+      const draftSuffix = draftCount > 0 ? ` (${draftCount} draft ${draftCount === 1 ? 'tiket' : 'tiketa'})` : '';
+
       let headerLine = '';
       let type = '';
       let needsAISummary = false;
 
-      // Build header based on scenario
-      if (selectedCount > 0 && gradedCount === 0 && bothCount === 0) {
-        // Only selected - no AI needed
-        headerLine = `${group.agentName} - izdvojeno ${selectedCount} tiketa`;
+      // Build header based on scenario - using displaySelectedCount and displayGradedCount
+      // so tickets that are both selected AND graded count in both categories
+      if (displaySelectedCount > 0 && displayGradedCount === 0) {
+        // Only selected (no graded) - no AI needed
+        headerLine = `${group.agentName} - izdvojeno ${displaySelectedCount} tiketa${draftSuffix}`;
         type = 'selected';
-      } else if (gradedCount > 0 && selectedCount === 0 && bothCount === 0) {
-        // Only graded
-        headerLine = `${group.agentName} - ocenjeno ${gradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
+      } else if (displayGradedCount > 0 && displaySelectedCount === 0) {
+        // Only graded (not selected today)
+        headerLine = `${group.agentName} - ocenjeno ${displayGradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}${draftSuffix}`;
         type = 'graded';
         needsAISummary = true;
-      } else if (bothCount > 0 && selectedCount === 0 && gradedCount === 0) {
-        // Only selected and graded (same tickets)
-        headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
+      } else if (displaySelectedCount > 0 && displayGradedCount > 0) {
+        // Both selected and graded (could be same tickets or different)
+        headerLine = `${group.agentName} - izdvojeno ${displaySelectedCount} ocenjeno ${displayGradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}${draftSuffix}`;
         type = 'both';
         needsAISummary = true;
-      } else {
-        // Mixed scenario
-        if (selectedCount > 0) {
-          agentSummaries.push({
-            header: `${group.agentName} - izdvojeno ${selectedCount} tiketa`,
-            description: null,
-            tickets: []
-          });
-        }
-        if (gradedCount > 0 || bothCount > 0) {
-          if (bothCount > 0 && gradedCount === 0) {
-            headerLine = `${group.agentName} - ${bothCount} izdvojeno i ocenjeno${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
-          } else if (bothCount > 0 && gradedCount > 0) {
-            headerLine = `${group.agentName} - izdvojen ${bothCount} i ocenjeno ${gradedCount} tiketa${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
-          } else {
-            headerLine = `${group.agentName} - ocenjeno ${gradedCount}${ukupnoText}${overallScore !== null ? ` - ${overallScore}%` : ''}`;
-          }
-          type = bothCount > 0 ? 'both' : 'graded';
-          needsAISummary = true;
-        }
+      } else if (draftCount > 0) {
+        // Only draft tickets
+        headerLine = `${group.agentName} - ${draftCount} draft ${draftCount === 1 ? 'tiket' : 'tiketa'}`;
+        type = 'draft';
       }
 
       if (headerLine) {
@@ -233,14 +233,15 @@ const generateSummary = async (req, res) => {
       }
 
       // Track agent summary metadata
-      if (selectedCount > 0 || gradedCount > 0 || bothCount > 0) {
+      if (selectedOnlyCount > 0 || gradedOnlyCount > 0 || bothCount > 0 || draftCount > 0) {
         agentsSummarized.push({
           agentId: group.agentId,
           agentName: group.agentName,
           type: type || 'selected',
-          count: selectedCount + gradedCount + bothCount,
+          count: selectedOnlyCount + gradedOnlyCount + bothCount + draftCount,
           weeklyTotal,
-          averageScore: overallScore
+          averageScore: overallScore,
+          draftCount
         });
       }
     }
@@ -303,7 +304,8 @@ const generateSummary = async (req, res) => {
           ticketCount: {
             selected: totalSelected,
             graded: totalGraded,
-            both: totalBoth
+            both: totalBoth,
+            draft: totalDraft
           },
           agentsSummarized,
           generatedAt: new Date()

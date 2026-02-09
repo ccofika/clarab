@@ -9,15 +9,12 @@ const {
   generateCoachingSuggestions
 } = require('../utils/openai');
 
-// QA Admin emails - these users have elevated permissions for archive management
-const QA_ADMIN_EMAILS = [
-  'filipkozomara@mebit.io',
-  'nevena@mebit.io'
-];
+// QA Admin roles - these roles have elevated permissions for archive management
+const QA_ADMIN_ROLES = ['admin', 'qa-admin'];
 
-// Helper function to check if user is a QA admin
-const isQAAdmin = (email) => {
-  return QA_ADMIN_EMAILS.includes(email?.toLowerCase());
+// Helper function to check if user is a QA admin (based on role)
+const isQAAdmin = (user) => {
+  return QA_ADMIN_ROLES.includes(user?.role);
 };
 
 // ============================================
@@ -721,27 +718,13 @@ exports.createTicket = async (req, res) => {
 
     // Review logic: If quality score < 85% and user should have tickets reviewed, set status to Draft
     const qualityScore = parseFloat(req.body.qualityScorePercent);
-    const userEmail = req.user.email?.toLowerCase();
 
-    // Check if user's tickets should go to review
-    // Only Filip's tickets go to review among reviewers, other reviewers skip review
-    const REVIEWER_EMAILS_LOCAL = [
-      'filipkozomara@mebit.io',
-      'nevena@mebit.io',
-      'majabasic@mebit.io',
-      'ana@mebit.io'
-    ];
+    // Check if user's tickets should go to review (based on role)
+    // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
+    const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
+    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role);
 
-    const shouldGoToReview = (email) => {
-      // Only Filip's tickets go to review
-      if (email === 'filipkozomara@mebit.io') return true;
-      // Other reviewers skip review
-      if (REVIEWER_EMAILS_LOCAL.includes(email)) return false;
-      // All other graders' tickets go to review
-      return true;
-    };
-
-    if (!isNaN(qualityScore) && qualityScore < 85 && shouldGoToReview(userEmail)) {
+    if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
       ticketData.status = 'Draft';
       ticketData.originalReviewScore = qualityScore;
       ticketData.firstReviewDate = new Date();
@@ -750,7 +733,7 @@ exports.createTicket = async (req, res) => {
         date: new Date(),
         scoreAtAction: qualityScore
       }];
-      logger.info(`Ticket will be sent to review - score ${qualityScore}% < 85% by user ${userEmail}`);
+      logger.info(`Ticket will be sent to review - score ${qualityScore}% < 85% by user ${req.user.email}`);
     }
 
     const ticket = await Ticket.create(ticketData);
@@ -844,20 +827,10 @@ exports.updateTicket = async (req, res) => {
       }
     }
 
-    // Review logic constants
-    const REVIEWER_EMAILS_LOCAL = [
-      'filipkozomara@mebit.io',
-      'nevena@mebit.io',
-      'majabasic@mebit.io',
-      'ana@mebit.io'
-    ];
-    const userEmail = req.user.email?.toLowerCase();
-
-    const shouldGoToReview = (email) => {
-      if (email === 'filipkozomara@mebit.io') return true;
-      if (REVIEWER_EMAILS_LOCAL.includes(email)) return false;
-      return true;
-    };
+    // Review logic constants (based on role)
+    // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
+    const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
+    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role);
 
     const newQualityScore = req.body.qualityScorePercent !== undefined
       ? parseFloat(req.body.qualityScorePercent)
@@ -873,7 +846,7 @@ exports.updateTicket = async (req, res) => {
         currentTicket.reviewHistory.some(h => h.action === 'approved');
 
       // If score is being set/changed to < 85%, user should go to review, AND ticket hasn't been reviewed yet
-      if (!isNaN(newQualityScore) && newQualityScore < 85 && shouldGoToReview(userEmail) && !hasBeenReviewed) {
+      if (!isNaN(newQualityScore) && newQualityScore < 85 && ticketShouldGoToReview && !hasBeenReviewed) {
         // Check if this is a new score being set or changed
         if (currentTicket.qualityScorePercent !== newQualityScore || currentTicket.qualityScorePercent === null || currentTicket.qualityScorePercent === undefined) {
           req.body.status = 'Draft';
@@ -1202,7 +1175,7 @@ exports.restoreTicket = async (req, res) => {
 
     // Check if user is the creator or a QA admin
     const isCreator = ticket.createdBy?._id?.toString() === req.user._id.toString();
-    const userIsAdmin = isQAAdmin(req.user.email);
+    const userIsAdmin = isQAAdmin(req.user);
 
     if (!isCreator && !userIsAdmin) {
       return res.status(403).json({ message: 'You can only restore tickets you created' });
@@ -1228,7 +1201,7 @@ exports.bulkRestoreTickets = async (req, res) => {
   try {
     const { ticketIds } = req.body;
     const userId = req.user._id;
-    const userIsAdmin = isQAAdmin(req.user.email);
+    const userIsAdmin = isQAAdmin(req.user);
 
     if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
       return res.status(400).json({ message: 'Please provide an array of ticket IDs' });
@@ -4558,7 +4531,7 @@ exports.getQAGradersForCoaching = async (req, res) => {
 // @access  Private
 exports.getQAAdminStatus = async (req, res) => {
   try {
-    const userIsAdmin = isQAAdmin(req.user.email);
+    const userIsAdmin = isQAAdmin(req.user);
     res.json({
       isAdmin: userIsAdmin,
       email: req.user.email
@@ -4575,7 +4548,7 @@ exports.getQAAdminStatus = async (req, res) => {
 exports.getAdminAllTickets = async (req, res) => {
   try {
     // Check if user is admin
-    if (!isQAAdmin(req.user.email)) {
+    if (!isQAAdmin(req.user)) {
       return res.status(403).json({ message: 'Admin access required' });
     }
 
@@ -4677,27 +4650,19 @@ exports.getAdminAllTickets = async (req, res) => {
 // REVIEW CONTROLLERS
 // ============================================
 
-// Reviewer emails - users who can access review functionality
-const REVIEWER_EMAILS = [
-  'filipkozomara@mebit.io',
-  'nevena@mebit.io',
-  'majabasic@mebit.io',
-  'ana@mebit.io'
-];
+// Reviewer roles - roles who can access review functionality
+const REVIEWER_ROLES = ['admin', 'qa-admin'];
 
-// Helper function to check if user is a reviewer
-const isReviewer = (email) => {
-  return REVIEWER_EMAILS.includes(email?.toLowerCase());
+// Helper function to check if user is a reviewer (based on role)
+const isReviewer = (user) => {
+  return REVIEWER_ROLES.includes(user?.role);
 };
 
 // Helper function to check if user should have their tickets reviewed
-// Only Filip's tickets go to review, other reviewers' tickets skip review
-const shouldTicketGoToReview = (userEmail) => {
-  const email = userEmail?.toLowerCase();
-  // Only Filip's tickets go to review
-  if (email === 'filipkozomara@mebit.io') return true;
-  // Other reviewers skip review
-  if (REVIEWER_EMAILS.includes(email)) return false;
+// Reviewers' (qa-admin, admin) tickets skip review, other graders' tickets go to review
+const shouldTicketGoToReview = (user) => {
+  // Reviewers' tickets skip review
+  if (REVIEWER_ROLES.includes(user?.role)) return false;
   // All other graders' tickets go to review
   return true;
 };

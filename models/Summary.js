@@ -40,15 +40,17 @@ const summarySchema = new mongoose.Schema({
     ticketCount: {
       selected: { type: Number, default: 0 },
       graded: { type: Number, default: 0 },
-      both: { type: Number, default: 0 } // Selected AND graded same day
+      both: { type: Number, default: 0 }, // Selected AND graded same day
+      draft: { type: Number, default: 0 }
     },
     agentsSummarized: [{
       agentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Agent' },
       agentName: String,
-      type: { type: String, enum: ['selected', 'graded', 'both'] },
+      type: { type: String, enum: ['selected', 'graded', 'both', 'draft'] },
       count: Number,
       weeklyTotal: Number, // Total tickets for this agent this week
-      averageScore: Number // Average score for graded tickets
+      averageScore: Number, // Average score for graded tickets
+      draftCount: Number
     }],
     generatedAt: { type: Date, default: Date.now }
   }
@@ -106,12 +108,36 @@ summarySchema.statics.isDateInCurrentWeek = function(date) {
 };
 
 // Helper method to determine shift based on ticket activity times
-summarySchema.statics.determineShift = function(tickets) {
+// startOfDay and endOfDay are used to determine which date we're checking activity for
+summarySchema.statics.determineShift = function(tickets, startOfDay, endOfDay) {
   let morningCount = 0;
   let afternoonCount = 0;
 
   tickets.forEach(ticket => {
-    const activityDate = ticket.gradedDate || ticket.dateEntered;
+    // Determine which activity date to use based on what happened ON the target day
+    // Priority: use the date that falls within the target day
+    let activityDate = null;
+
+    if (startOfDay && endOfDay) {
+      const dateEntered = ticket.dateEntered ? new Date(ticket.dateEntered) : null;
+      const gradedDate = ticket.gradedDate ? new Date(ticket.gradedDate) : null;
+
+      // Check if gradedDate is on the target day
+      const gradedOnDay = gradedDate && gradedDate >= startOfDay && gradedDate <= endOfDay;
+      // Check if dateEntered is on the target day
+      const selectedOnDay = dateEntered && dateEntered >= startOfDay && dateEntered <= endOfDay;
+
+      // Use the date that's on the target day (prefer gradedDate if both are on the same day)
+      if (gradedOnDay) {
+        activityDate = gradedDate;
+      } else if (selectedOnDay) {
+        activityDate = dateEntered;
+      }
+    } else {
+      // Fallback to old behavior if no day boundaries provided
+      activityDate = ticket.gradedDate || ticket.dateEntered;
+    }
+
     if (activityDate) {
       const hour = new Date(activityDate).getHours();
       if (hour >= 7 && hour < 15) {

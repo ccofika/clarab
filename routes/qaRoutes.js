@@ -207,68 +207,40 @@ const qaAuthorization = async (req, res, next) => {
   }
 };
 
-// Admin authorization - qa-admin, admin roles, or specific emails
+// Admin authorization - qa-admin or admin roles only
 const allAgentsAdminAuth = (req, res, next) => {
-  // Check if user has QA Admin role
   const qaAdminRoles = ['qa-admin', 'admin'];
   if (qaAdminRoles.includes(req.user.role)) {
     return next();
   }
 
-  // Fallback: check specific admin emails
-  const adminEmails = [
-    'filipkozomara@mebit.io',
-    'nevena@mebit.io'
-  ];
-
-  if (!adminEmails.includes(req.user.email)) {
-    return res.status(403).json({
-      message: 'Access denied. Only QA admins can manage all agents.'
-    });
-  }
-
-  next();
+  return res.status(403).json({
+    message: 'Access denied. Only QA admins can manage all agents.'
+  });
 };
 
-// Statistics authorization - qa-admin, admin roles, or specific emails
+// Statistics authorization - qa-admin or admin roles only
 const statisticsAuth = (req, res, next) => {
-  // Check if user has QA Admin role
   const qaAdminRoles = ['qa-admin', 'admin'];
   if (qaAdminRoles.includes(req.user.role)) {
     return next();
   }
 
-  // Fallback: check specific emails
-  const allowedEmails = [
-    'filipkozomara@mebit.io',
-    'nevena@mebit.io'
-  ];
-
-  if (!allowedEmails.includes(req.user.email)) {
-    return res.status(403).json({
-      message: 'Access denied. Statistics is only available for QA admins.'
-    });
-  }
-
-  next();
+  return res.status(403).json({
+    message: 'Access denied. Statistics is only available for QA admins.'
+  });
 };
 
-// Review authorization - only specific reviewers can access review functionality
+// Review authorization - qa-admin or admin roles can access review functionality
 const reviewAuth = (req, res, next) => {
-  const reviewerEmails = [
-    'filipkozomara@mebit.io',
-    'nevena@mebit.io',
-    'majabasic@mebit.io',
-    'ana@mebit.io'
-  ];
-
-  if (!reviewerEmails.includes(req.user.email)) {
-    return res.status(403).json({
-      message: 'Access denied. Only reviewers can access this resource.'
-    });
+  const reviewerRoles = ['qa-admin', 'admin'];
+  if (reviewerRoles.includes(req.user.role)) {
+    return next();
   }
 
-  next();
+  return res.status(403).json({
+    message: 'Access denied. Only reviewers can access this resource.'
+  });
 };
 
 // Check access endpoint - needs to be BEFORE qaAuthorization middleware
@@ -679,9 +651,10 @@ router.delete('/assignments/:assignmentId', protect, qaAuthorization, deleteAssi
 // ============================================
 const BugReport = require('../models/BugReport');
 
-// Bug report admin authorization - only Filip
+// Bug report admin authorization - qa-admin or admin roles
 const bugReportAdminAuth = (req, res, next) => {
-  if (req.user.email !== 'filipkozomara@mebit.io') {
+  const adminRoles = ['qa-admin', 'admin'];
+  if (!adminRoles.includes(req.user.role)) {
     return res.status(403).json({
       message: 'Access denied. Only admin can view bug reports.'
     });

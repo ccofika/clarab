@@ -6,12 +6,12 @@ const logger = require('../utils/logger');
 // MACRO CONTROLLERS
 // ============================================
 
-// Admin emails that have access to all macros
-const MACRO_ADMIN_EMAILS = ['filipkozomara@mebit.io', 'nevena@mebit.io'];
+// Admin roles that have access to all macros
+const MACRO_ADMIN_ROLES = ['admin', 'qa-admin'];
 
-// Helper to check if user is a macro admin
-const isMacroAdmin = (userEmail) => {
-  return MACRO_ADMIN_EMAILS.includes(userEmail?.toLowerCase());
+// Helper to check if user is a macro admin (based on role)
+const isMacroAdmin = (user) => {
+  return MACRO_ADMIN_ROLES.includes(user?.role);
 };
 
 // @desc    Get all macros for current user (own + public + shared with user)
@@ -21,7 +21,7 @@ exports.getAllMacros = async (req, res) => {
   try {
     const userId = req.user._id;
     const userEmail = req.user.email;
-    const isAdmin = isMacroAdmin(userEmail);
+    const isAdmin = isMacroAdmin(req.user);
     const { creatorId } = req.query;
 
     let macros;
@@ -82,7 +82,7 @@ exports.getMacro = async (req, res) => {
   try {
     const userId = req.user._id;
     const userEmail = req.user.email;
-    const isAdmin = isMacroAdmin(userEmail);
+    const isAdmin = isMacroAdmin(req.user);
 
     let macro;
 
@@ -129,7 +129,7 @@ exports.searchMacros = async (req, res) => {
   try {
     const userId = req.user._id;
     const userEmail = req.user.email;
-    const isAdmin = isMacroAdmin(userEmail);
+    const isAdmin = isMacroAdmin(req.user);
     const searchTerm = req.query.q || '';
     const { creatorId } = req.query;
 
@@ -256,7 +256,7 @@ exports.updateMacro = async (req, res) => {
   try {
     const userId = req.user._id;
     const userEmail = req.user.email;
-    const isAdmin = isMacroAdmin(userEmail);
+    const isAdmin = isMacroAdmin(req.user);
     const { title, feedback, scorecardData, categories, isPublic, sharedWith } = req.body;
 
     // Find the macro
@@ -372,7 +372,7 @@ exports.deleteMacro = async (req, res) => {
   try {
     const userId = req.user._id;
     const userEmail = req.user.email;
-    const isAdmin = isMacroAdmin(userEmail);
+    const isAdmin = isMacroAdmin(req.user);
 
     const macro = await Macro.findById(req.params.id);
 
@@ -529,7 +529,7 @@ exports.getQAGradersWithMacroCounts = async (req, res) => {
     const userEmail = req.user.email;
 
     // Only admins can access this endpoint
-    if (!isMacroAdmin(userEmail)) {
+    if (!isMacroAdmin(req.user)) {
       return res.status(403).json({ message: 'Access denied' });
     }
 

@@ -85,11 +85,6 @@ exports.protect = async (req, res, next) => {
 
 // Admin only middleware
 exports.admin = (req, res, next) => {
-  // SUPER ADMIN: filipkozomara@mebit.io always has admin access
-  if (req.user?.email?.toLowerCase() === 'filipkozomara@mebit.io') {
-    return next();
-  }
-
   if (req.user && req.user.role === 'admin') {
     next();
   } else {
@@ -99,11 +94,6 @@ exports.admin = (req, res, next) => {
 
 // Developer middleware (has same permissions as admin + additional developer-specific permissions)
 exports.developer = (req, res, next) => {
-  // SUPER ADMIN: filipkozomara@mebit.io always has developer access
-  if (req.user?.email?.toLowerCase() === 'filipkozomara@mebit.io') {
-    return next();
-  }
-
   if (req.user && (req.user.role === 'admin' || req.user.role === 'developer')) {
     next();
   } else {
