@@ -874,3 +874,292 @@ exports.updateSecuritySettings = async (req, res) => {
     res.status(500).json({ message: error.message });
   }
 };
+
+// @desc    Get available pages structure
+// @route   GET /api/developer/pages
+// @access  Private (Admin only)
+exports.getAvailablePages = async (req, res) => {
+  try {
+    console.log('📄 Admin accessing available pages structure');
+
+    // Define the pages structure with labels
+    const pages = {
+      workspaces: {
+        label: 'Workspaces',
+        description: 'Access to workspaces and canvas editing',
+        subPages: null
+      },
+      tools: {
+        label: 'Tools',
+        description: 'Utility tools collection',
+        subPages: {
+          'vip-calculator': { label: 'VIP Progress Calculator' },
+          'hash-explorer': { label: 'Hash Explorer Finder' },
+          'quick-links': { label: 'Quick Links' },
+          'kyc': { label: 'KYC Management' },
+          'countries-restrictions': { label: 'Countries & Restrictions' }
+        }
+      },
+      chat: {
+        label: 'Chat',
+        description: 'Team messaging and channels',
+        subPages: null
+      },
+      'knowledge-base': {
+        label: 'Knowledge Base',
+        description: 'Documentation and guides',
+        subPages: {
+          'admin': { label: 'KB Admin (Page Management)' }
+        }
+      },
+      'developer-dashboard': {
+        label: 'Developer Dashboard',
+        description: 'System metrics and user management',
+        subPages: null,
+        requiresRole: ['admin', 'developer']
+      },
+      'qa-manager': {
+        label: 'QA Manager',
+        description: 'Quality assurance ticket management',
+        requiresRole: ['qa', 'qa-admin', 'admin'],
+        subPages: {
+          'dashboard': { label: 'Dashboard', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'agents': { label: 'Agents', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'tickets': { label: 'Tickets', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'archive': { label: 'Archive', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'review': { label: 'Review', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'analytics': { label: 'Analytics', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'coaching': { label: 'Coaching', forRoles: ['qa', 'qa-admin', 'admin'] },
+          'all-agents': { label: 'All Agents (Admin)', forRoles: ['qa-admin', 'admin'], qaAdminOnly: true },
+          'statistics': { label: 'Statistics (Admin)', forRoles: ['qa-admin', 'admin'], qaAdminOnly: true },
+          'active-overview': { label: 'Active Overview (Admin)', forRoles: ['qa-admin', 'admin'], qaAdminOnly: true },
+          'bugs': { label: 'Bugs (Admin)', forRoles: ['qa-admin', 'admin'], qaAdminOnly: true }
+        }
+      },
+      'kyc-agent-stats': {
+        label: 'KYC Agent Stats',
+        description: 'KYC verification statistics',
+        requiresRole: ['developer', 'admin'],
+        subPages: null
+      }
+    };
+
+    res.json({ pages });
+  } catch (error) {
+    console.error('❌ Error getting available pages:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Update user role
+// @route   PUT /api/developer/users/:userId/role
+// @access  Private (Admin only)
+exports.updateUserRole = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { role } = req.body;
+
+    // Validate role
+    const validRoles = ['user', 'admin', 'developer', 'qa', 'qa-admin'];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        message: `Invalid role. Must be one of: ${validRoles.join(', ')}`
+      });
+    }
+
+    // Check if user is admin or super admin (filipkozomara@mebit.io)
+    const isSuperAdmin = req.user.email?.toLowerCase() === 'filipkozomara@mebit.io';
+    if (req.user.role !== 'admin' && !isSuperAdmin) {
+      return res.status(403).json({
+        message: 'Only admins can change user roles'
+      });
+    }
+
+    // Prevent admin from demoting themselves
+    if (userId === req.user._id.toString() && role !== 'admin') {
+      return res.status(400).json({
+        message: 'You cannot demote yourself from admin'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const oldRole = user.role;
+    user.role = role;
+
+    // If changing to admin or developer, enable developer-dashboard by default
+    if ((role === 'admin' || role === 'developer') && user.pagePermissions) {
+      if (!user.pagePermissions['developer-dashboard']) {
+        user.pagePermissions['developer-dashboard'] = { enabled: true };
+      } else {
+        user.pagePermissions['developer-dashboard'].enabled = true;
+      }
+    }
+
+    await user.save();
+
+    // Log this action
+    await ActivityLog.create({
+      level: 'warn',
+      message: `User role changed: ${user.name} (${user.email}) from "${oldRole}" to "${role}"`,
+      module: 'developerController',
+      user: req.user._id,
+      metadata: {
+        targetUser: userId,
+        targetEmail: user.email,
+        oldRole,
+        newRole: role,
+        adminUser: req.user.name
+      },
+      ip: req.ip || req.connection.remoteAddress
+    });
+
+    res.json({
+      message: `User role updated successfully`,
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      },
+      previousRole: oldRole
+    });
+  } catch (error) {
+    console.error('❌ Error updating user role:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Update user page permissions
+// @route   PUT /api/developer/users/:userId/permissions
+// @access  Private (Admin only)
+exports.updateUserPermissions = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { pagePermissions } = req.body;
+
+    // Check if user is admin or super admin (filipkozomara@mebit.io)
+    const isSuperAdmin = req.user.email?.toLowerCase() === 'filipkozomara@mebit.io';
+    if (req.user.role !== 'admin' && !isSuperAdmin) {
+      return res.status(403).json({
+        message: 'Only admins can change user permissions'
+      });
+    }
+
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const oldPermissions = user.pagePermissions ? JSON.parse(JSON.stringify(user.pagePermissions)) : {};
+
+    // Update page permissions
+    user.pagePermissions = pagePermissions;
+    await user.save();
+
+    // Log this action
+    await ActivityLog.create({
+      level: 'info',
+      message: `Page permissions updated for user: ${user.name} (${user.email})`,
+      module: 'developerController',
+      user: req.user._id,
+      metadata: {
+        targetUser: userId,
+        targetEmail: user.email,
+        oldPermissions,
+        newPermissions: pagePermissions,
+        adminUser: req.user.name
+      },
+      ip: req.ip || req.connection.remoteAddress
+    });
+
+    res.json({
+      message: 'User permissions updated successfully',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        pagePermissions: user.pagePermissions
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error updating user permissions:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Get user with permissions
+// @route   GET /api/developer/users/:userId/permissions
+// @access  Private (Admin only)
+exports.getUserPermissions = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await User.findById(userId).select('name email role pagePermissions');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        pagePermissions: user.pagePermissions || {}
+      }
+    });
+  } catch (error) {
+    console.error('❌ Error getting user permissions:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Reset all users' pagePermissions to let role-based access take over
+// @route   POST /api/developer/users/reset-permissions
+// @access  Private (Admin only)
+exports.resetAllPagePermissions = async (req, res) => {
+  try {
+    console.log('🔄 Resetting all users pagePermissions to enable role-based access');
+
+    // Check if user is admin or super admin (filipkozomara@mebit.io)
+    const isSuperAdmin = req.user.email?.toLowerCase() === 'filipkozomara@mebit.io';
+    if (req.user.role !== 'admin' && !isSuperAdmin) {
+      return res.status(403).json({
+        message: 'Only admins can reset page permissions'
+      });
+    }
+
+    // Remove pagePermissions from all users (set to undefined/null)
+    const result = await User.updateMany(
+      {},
+      { $unset: { pagePermissions: "" } }
+    );
+
+    // Log this action
+    await ActivityLog.create({
+      level: 'warn',
+      message: `All users pagePermissions reset by: ${req.user.name} (${req.user.email})`,
+      module: 'developerController',
+      user: req.user._id,
+      metadata: {
+        usersAffected: result.modifiedCount,
+        adminUser: req.user.name,
+        adminEmail: req.user.email
+      },
+      ip: req.ip || req.connection.remoteAddress
+    });
+
+    res.json({
+      message: 'All pagePermissions reset successfully. Role-based access is now active.',
+      usersAffected: result.modifiedCount
+    });
+  } catch (error) {
+    console.error('❌ Error resetting page permissions:', error);
+    res.status(500).json({ message: error.message });
+  }
+};

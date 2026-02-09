@@ -62,8 +62,16 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin', 'developer'],
+    enum: ['user', 'admin', 'developer', 'qa', 'qa-admin'],
     default: 'user'
+  },
+  // Page permissions - which pages/subpages user can access
+  // If empty/undefined, user has access based on their role
+  // Only set explicit values when you want to OVERRIDE role-based defaults
+  // true = explicitly granted, false = explicitly denied, undefined = use role-based default
+  pagePermissions: {
+    type: Object,
+    default: undefined
   },
   workspacePreferences: {
     type: Map,

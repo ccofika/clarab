@@ -25,7 +25,11 @@ const allowedEmails = [
   'teodorapajovic@mebit.io',
   'valentinasavic@mebit.io',
   'vladimirbabovic@mebit.io',
-  'zaklinailic@mebit.io'
+  'zaklinailic@mebit.io',
+  // New QA users (added 2026-02-03)
+  'markogasi@mebit.io',
+  'lukanonkovic@mebit.io',
+  'jovanradosavljevic@mebit.io'
 ];
 
 async function seedQAAllowedEmails() {

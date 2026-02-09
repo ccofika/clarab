@@ -56,6 +56,8 @@ router.get('/recent', protect, ext.getRecentPages);
 router.post('/recent/:pageId', protect, ext.trackPageVisit);
 
 // ===================== SEARCH =====================
+router.get('/search/fuzzy', protect, ext.fuzzySearch);
+router.post('/search/boost', protect, ext.recordSearchBoost);
 router.get('/search', protect, ext.search);
 router.get('/search/suggestions', protect, ext.searchSuggestions);
 

@@ -5,7 +5,10 @@ const KBPageAnalytics = require('../models/KBPageAnalytics');
 const KBUserPreferences = require('../models/KBUserPreferences');
 const KBPage = require('../models/KBPage');
 const KBEditLog = require('../models/KBEditLog');
+const KBSearchBoost = require('../models/KBSearchBoost');
 const crypto = require('crypto');
+const Fuse = require('fuse.js');
+const { extractPageText, extractExcerpts } = require('../utils/kbTextExtractor');
 
 // ===================== TEMPLATES =====================
 
@@ -494,6 +497,165 @@ exports.searchSuggestions = async (req, res) => {
     res.json({ pages, tags: matchingTags });
   } catch (error) {
     res.status(500).json({ message: 'Suggestions failed', error: error.message });
+  }
+};
+
+// ===================== FUZZY SEARCH =====================
+
+// In-memory cache for search index
+let searchCache = { pages: null, timestamp: 0 };
+const CACHE_TTL = 60000; // 60 seconds
+
+async function getSearchablePages() {
+  const now = Date.now();
+  if (searchCache.pages && (now - searchCache.timestamp) < CACHE_TTL) {
+    return searchCache.pages;
+  }
+
+  const pages = await KBPage.find({ isDeleted: false, isPublished: true })
+    .select('title slug icon tags blocks')
+    .lean();
+
+  const searchablePages = pages.map(page => ({
+    _id: page._id,
+    title: page.title,
+    slug: page.slug,
+    icon: page.icon,
+    tags: page.tags || [],
+    fullText: extractPageText(page),
+    blocks: page.blocks
+  }));
+
+  searchCache = { pages: searchablePages, timestamp: now };
+  return searchablePages;
+}
+
+exports.clearSearchCache = () => {
+  searchCache = { pages: null, timestamp: 0 };
+};
+
+exports.fuzzySearch = async (req, res) => {
+  try {
+    const { q, tags, limit = 20 } = req.query;
+
+    if (!q || q.trim().length < 2) {
+      return res.status(400).json({ message: 'Search query must be at least 2 characters' });
+    }
+
+    const query = q.trim();
+    let pages = await getSearchablePages();
+
+    // Pre-filter by tags if provided
+    if (tags) {
+      const tagList = tags.split(',').map(t => t.trim().toLowerCase());
+      pages = pages.filter(p => p.tags.some(t => tagList.includes(t)));
+    }
+
+    // Fuse.js fuzzy search
+    const fuse = new Fuse(pages, {
+      keys: [
+        { name: 'title', weight: 3 },
+        { name: 'tags', weight: 2 },
+        { name: 'fullText', weight: 1 }
+      ],
+      threshold: 0.4,
+      distance: 200,
+      includeScore: true,
+      includeMatches: true,
+      minMatchCharLength: 2,
+      ignoreLocation: true,
+      findAllMatches: true
+    });
+
+    let fuseResults = fuse.search(query);
+
+    // Count exact match frequency in full text
+    const queryLower = query.toLowerCase();
+    fuseResults = fuseResults.map(result => {
+      const fullTextLower = result.item.fullText.toLowerCase();
+      let matchCount = 0;
+      let pos = 0;
+      while ((pos = fullTextLower.indexOf(queryLower, pos)) !== -1) {
+        matchCount++;
+        pos += queryLower.length;
+      }
+      // Also count in title
+      const titleLower = result.item.title.toLowerCase();
+      let titlePos = 0;
+      while ((titlePos = titleLower.indexOf(queryLower, titlePos)) !== -1) {
+        matchCount += 3; // Title matches count extra
+        titlePos += queryLower.length;
+      }
+      const fuseMatchCount = result.matches ? result.matches.length : 0;
+
+      return {
+        ...result,
+        matchCount: Math.max(matchCount, fuseMatchCount)
+      };
+    });
+
+    // Get search boosts for this query
+    let boosts = {};
+    try {
+      boosts = await KBSearchBoost.getBoosts(queryLower);
+    } catch (e) {
+      // Non-critical, continue without boosts
+    }
+
+    // Combined scoring
+    fuseResults.sort((a, b) => {
+      const boostA = boosts[a.item._id.toString()] || 0;
+      const boostB = boosts[b.item._id.toString()] || 0;
+
+      // Primary: Fuse score (lower = better match)
+      const scoreDiff = a.score - b.score;
+      if (Math.abs(scoreDiff) > 0.1) return scoreDiff;
+
+      // Secondary: match count (higher = better)
+      const matchDiff = b.matchCount - a.matchCount;
+      if (matchDiff !== 0) return matchDiff;
+
+      // Tertiary: boost (higher = better)
+      return boostB - boostA;
+    });
+
+    const limitedResults = fuseResults.slice(0, parseInt(limit));
+
+    const results = limitedResults.map(result => {
+      const page = result.item;
+      const excerpts = extractExcerpts(page.blocks, query, 2);
+
+      return {
+        _id: page._id,
+        title: page.title,
+        slug: page.slug,
+        icon: page.icon,
+        tags: page.tags,
+        score: result.score,
+        matchCount: result.matchCount,
+        excerpts
+      };
+    });
+
+    res.json({ results, totalCount: fuseResults.length, query });
+  } catch (error) {
+    console.error('Fuzzy search error:', error);
+    res.status(500).json({ message: 'Search failed', error: error.message });
+  }
+};
+
+exports.recordSearchBoost = async (req, res) => {
+  try {
+    const { query, pageId } = req.body;
+
+    if (!query || !pageId) {
+      return res.status(400).json({ message: 'query and pageId are required' });
+    }
+
+    await KBSearchBoost.recordClick(query, pageId);
+    res.json({ message: 'Boost recorded' });
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to record boost', error: error.message });
   }
 };
 

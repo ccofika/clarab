@@ -3,6 +3,7 @@ const KBAdmin = require('../models/KBAdmin');
 const KBEditLog = require('../models/KBEditLog');
 const KBPageVersion = require('../models/KBPageVersion');
 const User = require('../models/User');
+const { clearSearchCache } = require('./kbExtendedController');
 
 const SUPER_ADMIN_EMAIL = 'filipkozomara@mebit.io';
 
@@ -143,6 +144,7 @@ exports.createPage = async (req, res) => {
     const populatedPage = await KBPage.findById(page._id)
       .populate('createdBy', 'name email');
 
+    clearSearchCache();
     res.status(201).json(populatedPage);
   } catch (error) {
     console.error('Error creating page:', error);
@@ -231,6 +233,7 @@ exports.updatePage = async (req, res) => {
       .populate('createdBy', 'name email')
       .populate('lastModifiedBy', 'name email');
 
+    clearSearchCache();
     res.json(populatedPage);
   } catch (error) {
     console.error('Error updating page:', error);
@@ -270,6 +273,7 @@ exports.deletePage = async (req, res) => {
       summary: `Deleted page "${page.title}"`
     });
 
+    clearSearchCache();
     res.json({ message: 'Page deleted successfully' });
   } catch (error) {
     console.error('Error deleting page:', error);
@@ -277,11 +281,11 @@ exports.deletePage = async (req, res) => {
   }
 };
 
-// Reorder page
+// Reorder page (supports positional inserts and section assignment)
 exports.reorderPage = async (req, res) => {
   try {
     const { id } = req.params;
-    let { newOrder, newParentPage } = req.body;
+    let { newOrder, newParentPage, sectionId } = req.body;
 
     const page = await KBPage.findById(id);
     if (!page || page.isDeleted) {
@@ -291,56 +295,45 @@ exports.reorderPage = async (req, res) => {
     const oldParentPage = page.parentPage;
     const oldOrder = page.order;
 
-    // Normalize null values
-    const oldParentStr = oldParentPage ? String(oldParentPage) : 'null';
-    const newParentStr = newParentPage ? String(newParentPage) : 'null';
+    // Step 1: Remove from old position (close the gap in old parent)
+    await KBPage.updateMany(
+      {
+        parentPage: oldParentPage,
+        order: { $gt: oldOrder },
+        isDeleted: false,
+        _id: { $ne: id }
+      },
+      { $inc: { order: -1 } }
+    );
 
-    // If moving to different parent
-    if (newParentStr !== oldParentStr) {
-      // Decrease order of pages after this one in old parent
-      await KBPage.updateMany(
-        {
-          parentPage: oldParentPage,
-          order: { $gt: oldOrder },
-          isDeleted: false
-        },
-        { $inc: { order: -1 } }
-      );
-
-      // Calculate new order - put at end of new parent's children
+    // Step 2: Calculate new order if not specified (newOrder < 0 means append at end)
+    if (newOrder === undefined || newOrder === null || newOrder < 0) {
       const siblingCount = await KBPage.countDocuments({
         parentPage: newParentPage || null,
         isDeleted: false,
         _id: { $ne: id }
       });
       newOrder = siblingCount;
+    }
 
-      page.parentPage = newParentPage || null;
-      page.order = newOrder;
-    } else {
-      // Same parent, just reorder
-      if (newOrder > oldOrder) {
-        await KBPage.updateMany(
-          {
-            parentPage: oldParentPage,
-            order: { $gt: oldOrder, $lte: newOrder },
-            isDeleted: false,
-            _id: { $ne: id }
-          },
-          { $inc: { order: -1 } }
-        );
-      } else if (newOrder < oldOrder) {
-        await KBPage.updateMany(
-          {
-            parentPage: oldParentPage,
-            order: { $gte: newOrder, $lt: oldOrder },
-            isDeleted: false,
-            _id: { $ne: id }
-          },
-          { $inc: { order: 1 } }
-        );
-      }
-      page.order = newOrder;
+    // Step 3: Make room at new position (push siblings at/after newOrder down)
+    await KBPage.updateMany(
+      {
+        parentPage: newParentPage || null,
+        order: { $gte: newOrder },
+        isDeleted: false,
+        _id: { $ne: id }
+      },
+      { $inc: { order: 1 } }
+    );
+
+    // Step 4: Place the page at its new position
+    page.parentPage = newParentPage || null;
+    page.order = newOrder;
+
+    // Step 5: Update sectionId if provided
+    if (sectionId !== undefined) {
+      page.sectionId = sectionId || null;
     }
 
     page.lastModifiedBy = req.user._id;

@@ -15,7 +15,13 @@ const {
   getRevokedTokens,
   revokeUserTokens,
   getSecuritySettings,
-  updateSecuritySettings
+  updateSecuritySettings,
+  // User Management
+  getAvailablePages,
+  updateUserRole,
+  updateUserPermissions,
+  getUserPermissions,
+  resetAllPagePermissions
 } = require('../controllers/developerController');
 const { protect, developer } = require('../middleware/auth');
 
@@ -45,5 +51,12 @@ router.get('/security/revoked-tokens', getRevokedTokens);
 router.post('/security/revoke-tokens', revokeUserTokens);
 router.get('/security/settings', getSecuritySettings);
 router.put('/security/settings', updateSecuritySettings);
+
+// User Management - Roles and Permissions (Admin only)
+router.get('/pages', getAvailablePages);
+router.put('/users/:userId/role', updateUserRole);
+router.get('/users/:userId/permissions', getUserPermissions);
+router.put('/users/:userId/permissions', updateUserPermissions);
+router.post('/users/reset-permissions', resetAllPagePermissions);
 
 module.exports = router;

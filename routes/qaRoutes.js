@@ -180,10 +180,16 @@ const {
   getStatisticsUsers
 } = require('../controllers/statisticsController');
 
-// Authorization middleware - check database for allowed emails
+// Authorization middleware - check QA roles or database for allowed emails
 const qaAuthorization = async (req, res, next) => {
   try {
-    // Check if user's email is in the allowed list
+    // Check if user has QA role (qa, qa-admin, or admin)
+    const qaRoles = ['qa', 'qa-admin', 'admin'];
+    if (qaRoles.includes(req.user.role)) {
+      return next();
+    }
+
+    // Fallback: Check if user's email is in the allowed list
     const allowedEmail = await QAAllowedEmail.findOne({ email: req.user.email.toLowerCase() });
 
     if (!allowedEmail) {
@@ -201,8 +207,15 @@ const qaAuthorization = async (req, res, next) => {
   }
 };
 
-// Admin authorization - only Filip and Nevena for All Agents management
+// Admin authorization - qa-admin, admin roles, or specific emails
 const allAgentsAdminAuth = (req, res, next) => {
+  // Check if user has QA Admin role
+  const qaAdminRoles = ['qa-admin', 'admin'];
+  if (qaAdminRoles.includes(req.user.role)) {
+    return next();
+  }
+
+  // Fallback: check specific admin emails
   const adminEmails = [
     'filipkozomara@mebit.io',
     'nevena@mebit.io'
@@ -210,15 +223,22 @@ const allAgentsAdminAuth = (req, res, next) => {
 
   if (!adminEmails.includes(req.user.email)) {
     return res.status(403).json({
-      message: 'Access denied. Only admins can manage all agents.'
+      message: 'Access denied. Only QA admins can manage all agents.'
     });
   }
 
   next();
 };
 
-// Statistics authorization - only Filip and Nevena
+// Statistics authorization - qa-admin, admin roles, or specific emails
 const statisticsAuth = (req, res, next) => {
+  // Check if user has QA Admin role
+  const qaAdminRoles = ['qa-admin', 'admin'];
+  if (qaAdminRoles.includes(req.user.role)) {
+    return next();
+  }
+
+  // Fallback: check specific emails
   const allowedEmails = [
     'filipkozomara@mebit.io',
     'nevena@mebit.io'
@@ -226,7 +246,7 @@ const statisticsAuth = (req, res, next) => {
 
   if (!allowedEmails.includes(req.user.email)) {
     return res.status(403).json({
-      message: 'Access denied. Statistics is only available for authorized users.'
+      message: 'Access denied. Statistics is only available for QA admins.'
     });
   }
 
@@ -255,8 +275,23 @@ const reviewAuth = (req, res, next) => {
 // This allows frontend to check if user has QA access without getting 403
 router.get('/check-access', protect, async (req, res) => {
   try {
+    // Check if user has QA role (qa, qa-admin, or admin)
+    const qaRoles = ['qa', 'qa-admin', 'admin'];
+    if (qaRoles.includes(req.user.role)) {
+      return res.json({
+        hasAccess: true,
+        isQaAdmin: req.user.role === 'qa-admin' || req.user.role === 'admin',
+        accessType: 'role'
+      });
+    }
+
+    // Fallback: check allowed emails list
     const allowedEmail = await QAAllowedEmail.findOne({ email: req.user.email.toLowerCase() });
-    res.json({ hasAccess: !!allowedEmail });
+    res.json({
+      hasAccess: !!allowedEmail,
+      isQaAdmin: allowedEmail?.isAdmin || false,
+      accessType: 'email'
+    });
   } catch (error) {
     console.error('Check access error:', error);
     res.json({ hasAccess: false });

