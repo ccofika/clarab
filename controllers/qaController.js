@@ -1,6 +1,7 @@
 const Agent = require('../models/Agent');
 const Ticket = require('../models/Ticket');
 const CoachingSession = require('../models/CoachingSession');
+const MinimizedTicket = require('../models/MinimizedTicket');
 const logger = require('../utils/logger');
 const ExcelJS = require('exceljs');
 const {
@@ -722,7 +723,9 @@ exports.createTicket = async (req, res) => {
     // Check if user's tickets should go to review (based on role)
     // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
     const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
-    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role);
+    const ALWAYS_REVIEW_EMAILS = ['filipkozomara@mebit.io', 'vasilijevitorovic@mebit.io'];
+    const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
+    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
 
     if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
       ticketData.status = 'Draft';
@@ -830,7 +833,9 @@ exports.updateTicket = async (req, res) => {
     // Review logic constants (based on role)
     // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
     const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
-    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role);
+    const ALWAYS_REVIEW_EMAILS = ['filipkozomara@mebit.io', 'vasilijevitorovic@mebit.io'];
+    const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
+    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
 
     const newQualityScore = req.body.qualityScorePercent !== undefined
       ? parseFloat(req.body.qualityScorePercent)
@@ -5244,6 +5249,115 @@ exports.reassignAllGraderTickets = async (req, res) => {
     });
   } catch (error) {
     logger.error('[REASSIGN-ALL-GRADER] Error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ============================================
+// MINIMIZED TICKET (Dock Feature)
+// ============================================
+
+exports.getMinimizedTicket = async (req, res) => {
+  try {
+    const minimized = await MinimizedTicket.findOne({ userId: req.user._id });
+    if (!minimized) {
+      return res.status(404).json({ message: 'No minimized ticket found' });
+    }
+    res.json(minimized);
+  } catch (error) {
+    logger.error('[MINIMIZED-TICKET] Error getting minimized ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.saveMinimizedTicket = async (req, res) => {
+  try {
+    const { ticketObjectId, mode, source, agentName, formData } = req.body;
+
+    const updateData = {
+      userId: req.user._id,
+      mode: mode || 'edit',
+      source: source || 'tickets',
+      agentName: agentName || '',
+      formData: formData || {},
+      createdAt: new Date()
+    };
+
+    // Only set ticketObjectId if it's a valid ID, otherwise unset it
+    const updateOp = { $set: updateData };
+    if (ticketObjectId) {
+      updateData.ticketObjectId = ticketObjectId;
+    } else {
+      updateOp.$unset = { ticketObjectId: 1 };
+    }
+
+    const minimized = await MinimizedTicket.findOneAndUpdate(
+      { userId: req.user._id },
+      updateOp,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.json(minimized);
+  } catch (error) {
+    logger.error('[MINIMIZED-TICKET] Error saving minimized ticket:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Beacon version - authenticates via query param token (sendBeacon can't set headers)
+exports.saveMinimizedTicketBeacon = async (req, res) => {
+  try {
+    const jwt = require('jsonwebtoken');
+    const User = require('../models/User');
+    const token = req.query.token;
+
+    if (!token) {
+      return res.status(401).json({ message: 'No token' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] });
+    const user = await User.findById(decoded.id).select('-password');
+    if (!user) {
+      return res.status(401).json({ message: 'User not found' });
+    }
+
+    const { ticketObjectId, mode, source, agentName, formData } = req.body;
+
+    const updateData = {
+      userId: user._id,
+      mode: mode || 'edit',
+      source: source || 'tickets',
+      agentName: agentName || '',
+      formData: formData || {},
+      createdAt: new Date()
+    };
+
+    const updateOp = { $set: updateData };
+    if (ticketObjectId) {
+      updateData.ticketObjectId = ticketObjectId;
+    } else {
+      updateOp.$unset = { ticketObjectId: 1 };
+    }
+
+    await MinimizedTicket.findOneAndUpdate(
+      { userId: user._id },
+      updateOp,
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    res.status(200).json({ ok: true });
+  } catch (error) {
+    logger.error('[MINIMIZED-TICKET-BEACON] Error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.clearMinimizedTicket = async (req, res) => {
+  try {
+    await MinimizedTicket.deleteOne({ userId: req.user._id });
+    res.json({ message: 'Minimized ticket cleared' });
+  } catch (error) {
+    logger.error('[MINIMIZED-TICKET] Error clearing minimized ticket:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

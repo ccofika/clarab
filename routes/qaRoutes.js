@@ -105,7 +105,12 @@ const {
   approveTicket,
   denyTicket,
   getReviewAnalytics,
-  getReviewPendingCount
+  getReviewPendingCount,
+  // Minimized ticket (dock feature)
+  getMinimizedTicket,
+  saveMinimizedTicket,
+  saveMinimizedTicketBeacon,
+  clearMinimizedTicket
 } = require('../controllers/qaController');
 
 const {
@@ -270,6 +275,9 @@ router.get('/check-access', protect, async (req, res) => {
   }
 });
 
+// Beacon endpoint for minimized ticket (handles own auth - sendBeacon can't set headers)
+router.post('/minimized-ticket/beacon', saveMinimizedTicketBeacon);
+
 // Apply authentication and authorization to all other routes
 router.use(protect);
 router.use(qaAuthorization);
@@ -321,6 +329,14 @@ router.post('/tickets/archive-all-filtered', archiveAllFiltered);
 router.post('/tickets/:id/grade', gradeTicket);
 router.post('/tickets/:id/archive', archiveTicket);
 router.post('/tickets/:id/restore', restoreTicket);
+
+// ============================================
+// MINIMIZED TICKET ROUTES (Dock Feature)
+// ============================================
+
+router.get('/minimized-ticket', getMinimizedTicket);
+router.post('/minimized-ticket', saveMinimizedTicket);
+router.delete('/minimized-ticket', clearMinimizedTicket);
 
 // ============================================
 // REVIEW ROUTES (Reviewers only - Filip, Nevena, Maja, Ana)
