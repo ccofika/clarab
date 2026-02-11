@@ -44,7 +44,8 @@ const blockSchema = new mongoose.Schema({
       'pdf',
       'breadcrumbs',
       'synced_block',
-      'columns'
+      'columns',
+      'collapsible_heading'
     ],
     required: true
   },
