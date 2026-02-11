@@ -110,7 +110,11 @@ const {
   getMinimizedTicket,
   saveMinimizedTicket,
   saveMinimizedTicketBeacon,
-  clearMinimizedTicket
+  clearMinimizedTicket,
+  // ZenMove controllers
+  getExtractionCounts,
+  getZenMoveSettings,
+  updateZenMoveSettings
 } = require('../controllers/qaController');
 
 const {
@@ -761,5 +765,13 @@ router.delete('/bug-reports/:id', bugReportAdminAuth, async (req, res) => {
     res.status(500).json({ message: 'Failed to delete bug report' });
   }
 });
+
+// ============================================
+// ZENMOVE ROUTES
+// ============================================
+
+router.get('/zenmove/extraction-counts', getExtractionCounts);
+router.get('/zenmove/settings', getZenMoveSettings);
+router.put('/zenmove/settings', allAgentsAdminAuth, updateZenMoveSettings);
 
 module.exports = router;

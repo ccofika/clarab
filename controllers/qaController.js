@@ -5361,3 +5361,95 @@ exports.clearMinimizedTicket = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+// ============================================
+// ZENMOVE CONTROLLERS
+// ============================================
+
+const ZenMoveSettings = require('../models/ZenMoveSettings');
+
+// @desc    Get extraction counts per agent for current user (this week)
+// @route   GET /api/qa/zenmove/extraction-counts
+// @access  Private
+exports.getExtractionCounts = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    // Get start of current ISO week (Monday)
+    const now = new Date();
+    const day = now.getDay(); // 0=Sun, 1=Mon, ...
+    const diff = day === 0 ? 6 : day - 1; // days since Monday
+    const weekStart = new Date(now);
+    weekStart.setDate(now.getDate() - diff);
+    weekStart.setHours(0, 0, 0, 0);
+
+    const counts = await Ticket.aggregate([
+      {
+        $match: {
+          createdBy: userId,
+          isArchived: false,
+          dateEntered: { $gte: weekStart }
+        }
+      },
+      {
+        $group: {
+          _id: '$agent',
+          count: { $sum: 1 }
+        }
+      }
+    ]);
+
+    let settings = await ZenMoveSettings.findOne();
+    if (!settings) {
+      settings = { extractionTarget: 8 };
+    }
+
+    res.json({
+      counts: counts.map(c => ({ agentId: c._id, count: c.count })),
+      extractionTarget: settings.extractionTarget
+    });
+  } catch (error) {
+    logger.error('[ZENMOVE] Error getting extraction counts:', error);
+    res.status(500).json({ message: 'Failed to get extraction counts' });
+  }
+};
+
+// @desc    Get ZenMove settings
+// @route   GET /api/qa/zenmove/settings
+// @access  Private
+exports.getZenMoveSettings = async (req, res) => {
+  try {
+    let settings = await ZenMoveSettings.findOne();
+    if (!settings) {
+      settings = await ZenMoveSettings.create({ extractionTarget: 8 });
+    }
+    res.json(settings);
+  } catch (error) {
+    logger.error('[ZENMOVE] Error getting settings:', error);
+    res.status(500).json({ message: 'Failed to get ZenMove settings' });
+  }
+};
+
+// @desc    Update ZenMove settings
+// @route   PUT /api/qa/zenmove/settings
+// @access  Admin only
+exports.updateZenMoveSettings = async (req, res) => {
+  try {
+    const { extractionTarget } = req.body;
+
+    let settings = await ZenMoveSettings.findOne();
+    if (!settings) {
+      settings = new ZenMoveSettings({});
+    }
+    if (extractionTarget !== undefined) {
+      settings.extractionTarget = extractionTarget;
+    }
+    settings.updatedBy = req.user._id;
+    await settings.save();
+
+    res.json(settings);
+  } catch (error) {
+    logger.error('[ZENMOVE] Error updating settings:', error);
+    res.status(500).json({ message: 'Failed to update ZenMove settings' });
+  }
+};
