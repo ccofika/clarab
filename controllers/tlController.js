@@ -28,6 +28,8 @@ const getDateRange = (period) => {
 };
 
 // Helper: calculate scorecard analysis from tickets
+// Split logic: at least half go into "areas of improvement" (lowest scores),
+// unless all items score 100%. Items are sorted by score ascending.
 const calculateScorecardAnalysis = (tickets) => {
   const scorecardAverages = {};
   const scorecardCounts = {};
@@ -56,9 +58,19 @@ const calculateScorecardAnalysis = (tickets) => {
     })
     .sort((a, b) => a.avgScore - b.avgScore);
 
+  // If all are 100%, everything is a strength
+  if (analysis.length > 0 && analysis.every(s => s.avgScore === 100)) {
+    return { strengths: analysis, weaknesses: [] };
+  }
+
+  // At least half must be in "areas of improvement" (weaknesses)
+  const halfCount = Math.ceil(analysis.length / 2);
+  const weaknesses = analysis.slice(0, halfCount);
+  const strengths = analysis.slice(halfCount);
+
   return {
-    strengths: analysis.filter(s => s.avgScore >= 80),
-    weaknesses: analysis.filter(s => s.avgScore < 80)
+    strengths: strengths.sort((a, b) => b.avgScore - a.avgScore),
+    weaknesses
   };
 };
 
@@ -81,8 +93,7 @@ const calculateTopCategories = (tickets) => {
       count: data.count,
       avgScore: Math.round(data.totalScore / data.count)
     }))
-    .sort((a, b) => a.avgScore - b.avgScore)
-    .slice(0, 5);
+    .sort((a, b) => a.avgScore - b.avgScore);
 };
 
 // Helper: calculate score distribution
@@ -196,10 +207,10 @@ exports.getDashboard = async (req, res) => {
     const agentPerformance = calculateAgentPerformance(agents, tickets);
     const scoreDistribution = calculateScoreDistribution(tickets);
 
-    // Top & bottom performers (min 3 tickets)
+    // Top & bottom performers (min 3 tickets) - return full lists
     const qualifiedAgents = agentPerformance.filter(a => a.tickets >= 3);
-    const topPerformers = qualifiedAgents.slice(0, 3);
-    const bottomPerformers = qualifiedAgents.slice(-3).reverse();
+    const topPerformers = qualifiedAgents.filter(a => a.avgScore >= 92);
+    const bottomPerformers = qualifiedAgents.filter(a => a.avgScore < 92).reverse();
 
     const overallAvgScore = tickets.length > 0
       ? Math.round(tickets.reduce((s, t) => s + t.qualityScorePercent, 0) / tickets.length)
@@ -285,8 +296,8 @@ exports.getTeamDetail = async (req, res) => {
     const scoreDistribution = calculateScoreDistribution(tickets);
 
     const qualifiedAgents = agentPerformance.filter(a => a.tickets >= 3);
-    const topPerformers = qualifiedAgents.slice(0, 3);
-    const bottomPerformers = qualifiedAgents.slice(-3).reverse();
+    const topPerformers = qualifiedAgents.filter(a => a.avgScore >= 92);
+    const bottomPerformers = qualifiedAgents.filter(a => a.avgScore < 92).reverse();
 
     const overallAvgScore = tickets.length > 0
       ? Math.round(tickets.reduce((s, t) => s + t.qualityScorePercent, 0) / tickets.length)
@@ -420,6 +431,92 @@ exports.getAgentDetail = async (req, res) => {
     });
   } catch (error) {
     console.error('Error getting agent detail:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// ==================== CATEGORY TICKETS ====================
+
+// GET /tl/category-tickets?category=X&scope=dashboard|team|agent&teamName=Y&agentId=Z&period=30
+exports.getCategoryTickets = async (req, res) => {
+  try {
+    const { category, scope = 'dashboard', teamName, agentId, period = 30 } = req.query;
+
+    if (!category) {
+      return res.status(400).json({ message: 'Category is required' });
+    }
+
+    const { startDate, endDate } = getDateRange(period);
+    const teams = await getTeamsForUser(req.user);
+
+    if (teams.length === 0) {
+      return res.json({ tickets: [], category, totalCount: 0 });
+    }
+
+    let agentIds;
+
+    if (scope === 'agent' && agentId) {
+      // Single agent scope
+      const agent = await Agent.findById(agentId).select('team').lean();
+      if (!agent || !teams.includes(agent.team)) {
+        return res.status(403).json({ message: 'Not authorized' });
+      }
+      agentIds = [agent._id];
+    } else if (scope === 'team' && teamName) {
+      // Team scope
+      if (!teams.includes(teamName)) {
+        return res.status(403).json({ message: 'Not authorized to view this team' });
+      }
+      const agents = await Agent.find({ team: teamName, isRemoved: { $ne: true } }).select('_id').lean();
+      agentIds = agents.map(a => a._id);
+    } else {
+      // Dashboard scope - all assigned teams
+      const agents = await Agent.find({ team: { $in: teams }, isRemoved: { $ne: true } }).select('_id').lean();
+      agentIds = agents.map(a => a._id);
+    }
+
+    // Fetch tickets with this category
+    const tickets = await Ticket.find({
+      agent: { $in: agentIds },
+      gradedDate: { $gte: startDate, $lte: endDate },
+      qualityScorePercent: { $ne: null },
+      categories: category
+    })
+    .populate('agent', 'name position team')
+    .select('ticketId qualityScorePercent categories feedback notes gradedDate agent scorecardValues scorecardVariant')
+    .sort({ qualityScorePercent: 1 })
+    .lean();
+
+    // Strip HTML helper
+    const stripHtml = (html) => {
+      if (!html) return '';
+      return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    const formattedTickets = tickets.map(t => ({
+      _id: t._id,
+      ticketId: t.ticketId,
+      score: t.qualityScorePercent,
+      categories: t.categories || [],
+      gradedDate: t.gradedDate,
+      agentName: t.agent?.name || 'Unknown',
+      agentTeam: t.agent?.team || '',
+      feedbackPreview: stripHtml(t.feedback)?.substring(0, 200) || '',
+      notesPreview: stripHtml(t.notes)?.substring(0, 150) || ''
+    }));
+
+    const avgScore = tickets.length > 0
+      ? Math.round(tickets.reduce((s, t) => s + t.qualityScorePercent, 0) / tickets.length)
+      : null;
+
+    res.json({
+      category,
+      totalCount: formattedTickets.length,
+      avgScore,
+      tickets: formattedTickets
+    });
+  } catch (error) {
+    console.error('Error getting category tickets:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

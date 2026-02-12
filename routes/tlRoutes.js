@@ -12,6 +12,7 @@ router.get('/dashboard', tl, tlController.getDashboard);
 router.get('/team/:teamName', tl, tlController.getTeamDetail);
 router.get('/agent/:agentId', tl, tlController.getAgentDetail);
 router.get('/available-teams', tl, tlController.getAvailableTeams);
+router.get('/category-tickets', tl, tlController.getCategoryTickets);
 
 // Admin routes (filipkozomara@mebit.io only)
 router.get('/admin/team-leaders', tlAdmin, tlController.getTeamLeaders);
