@@ -193,7 +193,7 @@ const {
 const qaAuthorization = async (req, res, next) => {
   try {
     // Check if user has QA role (qa, qa-admin, or admin)
-    const qaRoles = ['qa', 'qa-admin', 'admin'];
+    const qaRoles = ['qa', 'qa-admin', 'admin', 'tl'];
     if (qaRoles.includes(req.user.role)) {
       return next();
     }

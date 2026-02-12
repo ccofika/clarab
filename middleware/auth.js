@@ -130,6 +130,26 @@ exports.qaAdmin = (req, res, next) => {
   }
 };
 
+// TL (Team Leader) middleware - for TL dashboard access
+exports.tl = (req, res, next) => {
+  const allowedRoles = ['tl', 'admin', 'developer'];
+  if (req.user && allowedRoles.includes(req.user.role)) {
+    next();
+  } else {
+    res.status(403).json({ message: 'Not authorized - Team Leader access required' });
+  }
+};
+
+// TL Admin middleware - only filipkozomara@mebit.io can manage TL assignments
+exports.tlAdmin = (req, res, next) => {
+  const allowedEmails = ['filipkozomara@mebit.io'];
+  if (req.user && (req.user.role === 'admin' || allowedEmails.includes(req.user.email?.toLowerCase()))) {
+    next();
+  } else {
+    res.status(403).json({ message: 'Not authorized - TL Admin access required' });
+  }
+};
+
 // Aliases for readability
 exports.developerOrAdmin = exports.adminOrDeveloper;
 exports.adminOnly = exports.admin;

@@ -941,6 +941,12 @@ exports.getAvailablePages = async (req, res) => {
         description: 'KYC verification statistics',
         requiresRole: ['developer', 'admin'],
         subPages: null
+      },
+      'tl': {
+        label: 'TLs',
+        description: 'Team Leader dashboard with team analytics',
+        requiresRole: ['tl', 'admin'],
+        subPages: null
       }
     };
 
@@ -960,7 +966,7 @@ exports.updateUserRole = async (req, res) => {
     const { role } = req.body;
 
     // Validate role
-    const validRoles = ['user', 'admin', 'developer', 'qa', 'qa-admin'];
+    const validRoles = ['user', 'admin', 'developer', 'qa', 'qa-admin', 'tl'];
     if (!validRoles.includes(role)) {
       return res.status(400).json({
         message: `Invalid role. Must be one of: ${validRoles.join(', ')}`

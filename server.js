@@ -204,6 +204,7 @@ const statusSubscriptionRoutes = require('./routes/statusSubscriptionRoutes');
 const rulesRoutes = require('./routes/rulesRoutes');
 const knowledgeBaseRoutes = require('./routes/knowledgeBaseRoutes');
 const kbExtendedRoutes = require('./routes/kbExtendedRoutes');
+const tlRoutes = require('./routes/tlRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
@@ -233,6 +234,7 @@ app.use('/api/status-subscriptions', statusSubscriptionRoutes); // Status page s
 app.use('/api/qa/rules', rulesRoutes); // QA Rules (AI evaluation knowledge)
 app.use('/api/knowledge-base', knowledgeBaseRoutes); // Knowledge Base for customer support
 app.use('/api/knowledge-base', kbExtendedRoutes); // KB Extended: templates, versions, comments, search, sharing, analytics
+app.use('/api/tl', tlRoutes); // Team Leader dashboard
 
 // Root route
 app.get('/', (req, res) => {

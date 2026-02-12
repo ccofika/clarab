@@ -62,7 +62,7 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin', 'developer', 'qa', 'qa-admin'],
+    enum: ['user', 'admin', 'developer', 'qa', 'qa-admin', 'tl'],
     default: 'user'
   },
   // Page permissions - which pages/subpages user can access
