@@ -164,17 +164,24 @@ exports.updatePage = async (req, res) => {
     }
 
     // Auto-create version snapshot before applying updates
+    // Throttle: skip version creation if last version is less than 2 minutes old (avoids flooding from auto-save)
     try {
-      const changesSummary = [];
-      if (updates.title && updates.title !== page.title) changesSummary.push('title');
-      if (updates.blocks) changesSummary.push('content');
-      if (updates.dropdowns) changesSummary.push('dropdowns');
-      if (updates.icon && updates.icon !== page.icon) changesSummary.push('icon');
-      if (updates.coverImage !== undefined) changesSummary.push('cover');
-      const summary = changesSummary.length > 0
-        ? `Changed: ${changesSummary.join(', ')}`
-        : 'Page updated';
-      await KBPageVersion.createVersion(page, req.user._id, summary);
+      const lastVersion = await KBPageVersion.findOne({ page: page._id }).sort({ version: -1 }).lean();
+      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      const shouldCreateVersion = !lastVersion || !lastVersion.createdAt || lastVersion.createdAt < twoMinutesAgo;
+
+      if (shouldCreateVersion) {
+        const changesSummary = [];
+        if (updates.title && updates.title !== page.title) changesSummary.push('title');
+        if (updates.blocks) changesSummary.push('content');
+        if (updates.dropdowns) changesSummary.push('dropdowns');
+        if (updates.icon && updates.icon !== page.icon) changesSummary.push('icon');
+        if (updates.coverImage !== undefined) changesSummary.push('cover');
+        const summary = changesSummary.length > 0
+          ? `Changed: ${changesSummary.join(', ')}`
+          : 'Page updated';
+        await KBPageVersion.createVersion(page, req.user._id, summary);
+      }
     } catch (versionError) {
       console.error('Error creating page version:', versionError);
       // Don't block the update if version creation fails
@@ -217,17 +224,25 @@ exports.updatePage = async (req, res) => {
     page.lastModifiedBy = req.user._id;
     await page.save();
 
-    // Log the update
-    await KBEditLog.logEdit(page._id, req.user._id, 'update', {
-      before,
-      after: {
-        title: page.title,
-        icon: page.icon,
-        blocks: page.blocks?.length || 0,
-        dropdowns: page.dropdowns?.length || 0
-      },
-      summary: `Updated page "${page.title}"`
-    });
+    // Log the update (throttled: skip if last edit log for this page is less than 2 minutes old)
+    try {
+      const lastLog = await KBEditLog.findOne({ page: page._id, action: 'update' }).sort({ createdAt: -1 }).lean();
+      const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+      if (!lastLog || !lastLog.createdAt || lastLog.createdAt < twoMinAgo) {
+        await KBEditLog.logEdit(page._id, req.user._id, 'update', {
+          before,
+          after: {
+            title: page.title,
+            icon: page.icon,
+            blocks: page.blocks?.length || 0,
+            dropdowns: page.dropdowns?.length || 0
+          },
+          summary: `Updated page "${page.title}"`
+        });
+      }
+    } catch (logError) {
+      console.error('Error logging edit:', logError);
+    }
 
     const populatedPage = await KBPage.findById(page._id)
       .populate('createdBy', 'name email')

@@ -4387,7 +4387,7 @@ exports.updateCoachingSession = async (req, res) => {
     await session.save();
     await session.populate('agent', 'name position team');
     await session.populate('generatedBy', 'name email');
-    await session.populate('sharedWith.agent', 'name position team');
+    await session.populate('sharedWith.userId', 'name email');
 
     res.json(session);
   } catch (error) {
