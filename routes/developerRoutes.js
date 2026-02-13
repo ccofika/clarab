@@ -21,7 +21,8 @@ const {
   updateUserRole,
   updateUserPermissions,
   getUserPermissions,
-  resetAllPagePermissions
+  resetAllPagePermissions,
+  syncQAAllowedEmails
 } = require('../controllers/developerController');
 const { protect, developer } = require('../middleware/auth');
 
@@ -58,5 +59,6 @@ router.put('/users/:userId/role', updateUserRole);
 router.get('/users/:userId/permissions', getUserPermissions);
 router.put('/users/:userId/permissions', updateUserPermissions);
 router.post('/users/reset-permissions', resetAllPagePermissions);
+router.post('/sync-qa-emails', syncQAAllowedEmails);
 
 module.exports = router;

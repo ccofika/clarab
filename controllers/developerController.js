@@ -7,6 +7,7 @@ const LoginAttempt = require('../models/LoginAttempt');
 const RevokedToken = require('../models/RevokedToken');
 const RefreshToken = require('../models/RefreshToken');
 const SecuritySettings = require('../models/SecuritySettings');
+const QAAllowedEmail = require('../models/QAAllowedEmail');
 const mongoose = require('mongoose');
 const os = require('os');
 
@@ -1007,6 +1008,23 @@ exports.updateUserRole = async (req, res) => {
 
     await user.save();
 
+    // Sync QAAllowedEmail collection with role changes
+    const qaRoles = ['qa', 'qa-admin', 'admin'];
+    const isNowQA = qaRoles.includes(role);
+    const wasQA = qaRoles.includes(oldRole);
+
+    if (isNowQA && !wasQA) {
+      // Adding QA role - ensure email is in QAAllowedEmail
+      await QAAllowedEmail.findOneAndUpdate(
+        { email: user.email.toLowerCase() },
+        { email: user.email.toLowerCase(), addedBy: req.user._id, note: `Auto-added via role change to "${role}"` },
+        { upsert: true, new: true }
+      );
+    } else if (!isNowQA && wasQA) {
+      // Removing QA role - remove email from QAAllowedEmail
+      await QAAllowedEmail.deleteOne({ email: user.email.toLowerCase() });
+    }
+
     // Log this action
     await ActivityLog.create({
       level: 'warn',
@@ -1035,6 +1053,46 @@ exports.updateUserRole = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Error updating user role:', error);
+    res.status(500).json({ message: error.message });
+  }
+};
+
+// @desc    Sync QAAllowedEmail collection with users who have qa/qa-admin/admin roles
+// @route   POST /api/developer/sync-qa-emails
+// @access  Private (Admin only)
+exports.syncQAAllowedEmails = async (req, res) => {
+  try {
+    const qaRoles = ['qa', 'qa-admin', 'admin'];
+    const qaUsers = await User.find({ role: { $in: qaRoles } }).select('email');
+    const qaEmails = qaUsers.map(u => u.email.toLowerCase());
+
+    // Get current QAAllowedEmail entries
+    const existing = await QAAllowedEmail.find().select('email');
+    const existingEmails = existing.map(e => e.email.toLowerCase());
+
+    // Add missing emails
+    const toAdd = qaEmails.filter(e => !existingEmails.includes(e));
+    for (const email of toAdd) {
+      await QAAllowedEmail.findOneAndUpdate(
+        { email },
+        { email, addedBy: req.user._id, note: 'Auto-added via sync' },
+        { upsert: true }
+      );
+    }
+
+    // Remove emails of users who no longer have QA roles
+    const toRemove = existingEmails.filter(e => !qaEmails.includes(e));
+    if (toRemove.length > 0) {
+      await QAAllowedEmail.deleteMany({ email: { $in: toRemove } });
+    }
+
+    res.json({
+      message: `Sync complete. Added: ${toAdd.length}, Removed: ${toRemove.length}`,
+      added: toAdd,
+      removed: toRemove
+    });
+  } catch (error) {
+    console.error('❌ Error syncing QA emails:', error);
     res.status(500).json({ message: error.message });
   }
 };
