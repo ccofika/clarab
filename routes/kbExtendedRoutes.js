@@ -95,4 +95,11 @@ router.put('/settings', protect, kbAdminAuth, ext.updateSettings);
 router.get('/pages/:id/export/:format', protect, ext.exportPage);
 router.post('/import', protect, kbAdminAuth, ext.importPage);
 
+// ===================== LEARN MODE =====================
+const learn = require('../controllers/kbLearnController');
+router.get('/learn/categories', protect, learn.getLearnCategories);
+router.post('/learn/generate-quiz', protect, learn.generateQuiz);
+router.post('/learn/history', protect, learn.saveHistory);
+router.get('/learn/history', protect, learn.getHistory);
+
 module.exports = router;
