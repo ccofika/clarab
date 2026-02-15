@@ -20,7 +20,12 @@ const {
   removeAdmin,
   // Edit logs
   getEditLogs,
-  getPageEditLogs
+  getPageEditLogs,
+  // Sections
+  getSections,
+  createSection,
+  updateSection,
+  deleteSection
 } = require('../controllers/knowledgeBaseController');
 
 // Hardcoded superadmin email
@@ -85,6 +90,13 @@ router.get('/pages', protect, optionalAdminCheck, getAllPages);
 
 // Get single page by slug
 router.get('/pages/by-slug/:slug', protect, optionalAdminCheck, getPageBySlug);
+
+// ==================== SECTIONS (all users can read, admins can write) ====================
+
+router.get('/sections', protect, getSections);
+router.post('/sections', protect, kbAdminAuth, createSection);
+router.put('/sections/:id', protect, kbAdminAuth, updateSection);
+router.delete('/sections/:id', protect, kbAdminAuth, deleteSection);
 
 // ==================== ADMIN ROUTES ====================
 

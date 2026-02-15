@@ -2,6 +2,7 @@ const KBPage = require('../models/KBPage');
 const KBAdmin = require('../models/KBAdmin');
 const KBEditLog = require('../models/KBEditLog');
 const KBPageVersion = require('../models/KBPageVersion');
+const KBSection = require('../models/KBSection');
 const User = require('../models/User');
 const { clearSearchCache } = require('./kbExtendedController');
 
@@ -500,5 +501,86 @@ exports.getPageEditLogs = async (req, res) => {
   } catch (error) {
     console.error('Error fetching page edit logs:', error);
     res.status(500).json({ message: 'Error fetching page edit logs' });
+  }
+};
+
+// ==================== SECTIONS ====================
+
+// Get all sections
+exports.getSections = async (req, res) => {
+  try {
+    const sections = await KBSection.find().sort({ order: 1 }).lean();
+    res.json(sections);
+  } catch (error) {
+    console.error('Error fetching sections:', error);
+    res.status(500).json({ message: 'Error fetching sections' });
+  }
+};
+
+// Create section
+exports.createSection = async (req, res) => {
+  try {
+    const { name } = req.body;
+    if (!name || !name.trim()) {
+      return res.status(400).json({ message: 'Section name is required' });
+    }
+
+    const count = await KBSection.countDocuments();
+    const section = await KBSection.create({
+      name: name.trim(),
+      order: count,
+      createdBy: req.user._id
+    });
+
+    res.status(201).json(section);
+  } catch (error) {
+    console.error('Error creating section:', error);
+    res.status(500).json({ message: 'Error creating section' });
+  }
+};
+
+// Update section (rename)
+exports.updateSection = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    const section = await KBSection.findById(id);
+    if (!section) {
+      return res.status(404).json({ message: 'Section not found' });
+    }
+
+    if (name !== undefined) section.name = name.trim();
+    await section.save();
+
+    res.json(section);
+  } catch (error) {
+    console.error('Error updating section:', error);
+    res.status(500).json({ message: 'Error updating section' });
+  }
+};
+
+// Delete section (unassign pages)
+exports.deleteSection = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const section = await KBSection.findById(id);
+    if (!section) {
+      return res.status(404).json({ message: 'Section not found' });
+    }
+
+    // Unassign all pages from this section
+    await KBPage.updateMany(
+      { sectionId: id },
+      { sectionId: null }
+    );
+
+    await KBSection.deleteOne({ _id: id });
+
+    res.json({ message: 'Section deleted' });
+  } catch (error) {
+    console.error('Error deleting section:', error);
+    res.status(500).json({ message: 'Error deleting section' });
   }
 };

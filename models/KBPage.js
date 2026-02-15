@@ -45,7 +45,8 @@ const blockSchema = new mongoose.Schema({
       'breadcrumbs',
       'synced_block',
       'columns',
-      'collapsible_heading'
+      'collapsible_heading',
+      'expandable_content_list'
     ],
     required: true
   },
@@ -138,7 +139,7 @@ const kbPageSchema = new mongoose.Schema({
     default: false
   },
 
-  // Section ID for client-side grouping (sections stored in localStorage, not DB)
+  // Section ID for grouping (references KBSection._id)
   sectionId: {
     type: String,
     default: null
