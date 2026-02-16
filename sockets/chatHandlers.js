@@ -15,11 +15,8 @@ module.exports = (io, socket) => {
         'members.userId': userId
       });
 
-      console.log(`🚪 User ${userId} joining ${channels.length} channels`);
-
       channels.forEach((channel) => {
         socket.join(`chat:${channel._id}`);
-        console.log(`  ✅ Joined channel: ${channel._id}`);
       });
 
       // Set user as online
@@ -43,7 +40,6 @@ module.exports = (io, socket) => {
         channelCount: channels.length
       });
 
-      console.log(`✅ Chat initialized for user ${userId} - joined ${channels.length} channels`);
     } catch (error) {
       console.error('Error initializing chat:', error);
       socket.emit('chat:error', { message: 'Failed to initialize chat' });

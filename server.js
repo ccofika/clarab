@@ -98,9 +98,9 @@ app.use(cors(corsOptions));
 // Slack webhook endpoints need raw body for signature verification
 app.use('/api/slack/events', express.raw({ type: 'application/json' }));
 
-// KYC Stats Slack Events - MUST be before body parsing middleware
-const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
-app.post('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }), handleKYCStatsSlackEvents);
+// KYC Stats Slack Events - PAUSED (not in use)
+// const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
+// app.post('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }), handleKYCStatsSlackEvents);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
@@ -191,10 +191,10 @@ const qaRoutes = require('./routes/qaRoutes');
 const scrapingRoutes = require('./routes/scrapingRoutes');
 const knowledgeRoutes = require('./routes/knowledgeRoutes');
 const reportRoutes = require('./routes/reportRoutes');
-const chatRoutes = require('./routes/chatRoutes');
+// const chatRoutes = require('./routes/chatRoutes'); // PAUSED
 const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
-const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
+// const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes'); // PAUSED
 const pushRoutes = require('./routes/pushRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const issueRoutes = require('./routes/issueRoutes');
@@ -221,10 +221,10 @@ app.use('/api/qa', qaRoutes); // QA Manager endpoints
 app.use('/api/qa/scrape', scrapingRoutes); // QA Scraping endpoints
 app.use('/api/qa/knowledge', knowledgeRoutes); // QA Knowledge Base endpoints
 app.use('/api/reports', reportRoutes); // Statistics/Reports system
-app.use('/api/chat', chatRoutes); // Chat endpoints
+// app.use('/api/chat', chatRoutes); // Chat endpoints - PAUSED
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
-app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
+// app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats - PAUSED
 app.use('/api/push', pushRoutes); // Push notifications
 app.use('/api/categories', categoryRoutes); // Category management for WorkspaceNavigation
 app.use('/api/issues', issueRoutes); // Active Issues tracking
@@ -322,11 +322,9 @@ io.on('connection', (socket) => {
         message: 'Socket authenticated successfully'
       });
 
-      console.log(`🔐 Socket authenticated for user: ${user.name} (${socket.userId})`);
-
-      // Load chat handlers after authentication
-      const chatHandlers = require('./sockets/chatHandlers');
-      chatHandlers(io, socket);
+      // Chat system paused - socket auth only, no chat handlers
+      // const chatHandlers = require('./sockets/chatHandlers');
+      // chatHandlers(io, socket);
     } catch (error) {
       console.error('❌ Socket authentication failed:', error.message);
       socket.emit('auth_error', {

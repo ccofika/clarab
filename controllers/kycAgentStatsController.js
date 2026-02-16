@@ -73,14 +73,9 @@ exports.handleSlackEvents = async (req, res) => {
       payload = req.body;
     }
 
-    console.log('📊 KYC Stats webhook received:', {
-      type: payload.type,
-      event: payload.event?.type
-    });
 
     // Handle URL verification challenge
     if (payload.type === 'url_verification') {
-      console.log('✅ KYC Stats Slack URL verification');
       return res.json({ challenge: payload.challenge });
     }
 
@@ -101,11 +96,6 @@ exports.handleSlackEvents = async (req, res) => {
         return res.status(200).send();
       }
 
-      console.log('🎯 KYC Stats event:', {
-        type: event.type,
-        user: event.user,
-        channel: event.channel || event.item?.channel
-      });
 
       // Handle reaction_added (⏳ emoji)
       if (event.type === 'reaction_added') {
@@ -139,11 +129,6 @@ const handleReactionAdded = async (event) => {
       return;
     }
 
-    console.log('⏳ Hourglass reaction detected:', {
-      user: event.user,
-      reaction: event.reaction,
-      item: event.item
-    });
 
     // Find the agent by Slack ID
     let agent = await KYCAgent.findBySlackId(event.user);
@@ -161,7 +146,6 @@ const handleReactionAdded = async (event) => {
               agent.slackUserId = event.user;
               agent.slackUsername = userInfo.user.name;
               await agent.save();
-              console.log(`✅ Linked agent ${agent.name} to Slack ID ${event.user}`);
             }
           }
         } catch (e) {
@@ -171,8 +155,7 @@ const handleReactionAdded = async (event) => {
     }
 
     if (!agent) {
-      console.log('⚠️ Reaction from unknown agent:', event.user);
-      return;
+        return;
     }
 
     // Record the ticket taken activity
@@ -187,7 +170,6 @@ const handleReactionAdded = async (event) => {
       channelId: event.item.channel
     });
 
-    console.log(`✅ Recorded ticket taken by ${agent.name}`);
   } catch (error) {
     console.error('❌ Error handling reaction:', error);
   }
@@ -203,11 +185,6 @@ const handleThreadMessage = async (event) => {
       return;
     }
 
-    console.log('💬 Thread message detected:', {
-      user: event.user,
-      thread_ts: event.thread_ts,
-      ts: event.ts
-    });
 
     // Find the agent
     let agent = await KYCAgent.findBySlackId(event.user);
@@ -248,7 +225,6 @@ const handleThreadMessage = async (event) => {
       isThreadReply: true
     });
 
-    console.log(`✅ Recorded thread reply by ${agent.name}`);
   } catch (error) {
     console.error('❌ Error handling thread message:', error);
   }
