@@ -280,6 +280,17 @@ const schemas = {
       .allow(null),
     scorecardValues: Joi.object()
       .pattern(Joi.string(), Joi.number().min(0).max(4).allow(null))
+      .optional(),
+    scorecardVersion: Joi.string()
+      .valid('v2', null)
+      .optional()
+      .allow(null),
+    reoccurringError: Joi.string()
+      .valid('yes', 'no', 'unsure', null)
+      .optional()
+      .allow(null),
+    reoccurringErrorCategories: Joi.array()
+      .items(Joi.string().trim())
       .optional()
   }),
 
@@ -343,6 +354,17 @@ const schemas = {
       .allow(null),
     scorecardValues: Joi.object()
       .pattern(Joi.string(), Joi.number().min(0).max(4).allow(null))
+      .optional(),
+    scorecardVersion: Joi.string()
+      .valid('v2', null)
+      .optional()
+      .allow(null),
+    reoccurringError: Joi.string()
+      .valid('yes', 'no', 'unsure', null)
+      .optional()
+      .allow(null),
+    reoccurringErrorCategories: Joi.array()
+      .items(Joi.string().trim())
       .optional()
   })
 };

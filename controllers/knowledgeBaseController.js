@@ -94,7 +94,7 @@ exports.getPageBySlug = async (req, res) => {
 // Create new page
 exports.createPage = async (req, res) => {
   try {
-    const { title, icon, coverImage, parentPage, blocks, dropdowns, isSection, sectionId } = req.body;
+    const { title, icon, coverImage, parentPage, blocks, dropdowns, isSection, sectionId, pageSettings } = req.body;
 
     if (!title || !title.trim()) {
       return res.status(400).json({ message: 'Title is required' });
@@ -132,6 +132,7 @@ exports.createPage = async (req, res) => {
       dropdowns: dropdowns || [],
       isSection: isSection || false,
       sectionId: sectionId || null,
+      pageSettings: pageSettings || { fullWidth: false, theme: '' },
       createdBy: req.user._id,
       lastModifiedBy: req.user._id
     });
@@ -197,7 +198,7 @@ exports.updatePage = async (req, res) => {
     };
 
     // Update allowed fields
-    const allowedUpdates = ['title', 'icon', 'coverImage', 'parentPage', 'blocks', 'dropdowns', 'isPublished', 'isSection', 'sectionId', 'tags'];
+    const allowedUpdates = ['title', 'icon', 'coverImage', 'parentPage', 'blocks', 'dropdowns', 'isPublished', 'isSection', 'sectionId', 'tags', 'pageSettings'];
     allowedUpdates.forEach(field => {
       if (updates[field] !== undefined) {
         page[field] = updates[field];

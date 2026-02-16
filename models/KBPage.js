@@ -145,6 +145,12 @@ const kbPageSchema = new mongoose.Schema({
     default: null
   },
 
+  // Page display settings (fullWidth, theme, etc.)
+  pageSettings: {
+    type: mongoose.Schema.Types.Mixed,
+    default: { fullWidth: false, theme: '' }
+  },
+
   // Tags
   tags: [{
     type: String,

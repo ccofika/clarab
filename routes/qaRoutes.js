@@ -774,4 +774,74 @@ router.get('/zenmove/extraction-counts', getExtractionCounts);
 router.get('/zenmove/settings', getZenMoveSettings);
 router.put('/zenmove/settings', allAgentsAdminAuth, updateZenMoveSettings);
 
+// ============ TEMPORARY MIGRATION ENDPOINT - DELETE AFTER USE ============
+const Ticket = require('../models/Ticket');
+
+router.get('/migrate-v2-scorecard', protect, async (req, res) => {
+  try {
+    if (req.user.email !== 'filipkozomara@mebit.io') {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    const dryRun = req.query.apply !== 'true';
+
+    // Today's date range (2026-02-16)
+    const todayStart = new Date('2026-02-16T00:00:00.000Z');
+    const todayEnd = new Date('2026-02-17T00:00:00.000Z');
+
+    // Find today's Selected, non-archived, non-V2 tickets (all graders)
+    const tickets = await Ticket.find({
+      dateEntered: { $gte: todayStart, $lt: todayEnd },
+      status: 'Selected',
+      isArchived: { $ne: true },
+      scorecardVersion: { $ne: 'v2' }
+    }).populate('agent', 'name position').populate('createdBy', 'name email').lean();
+
+    const summary = tickets.map(t => ({
+      _id: t._id,
+      ticketId: t.ticketId,
+      agent: t.agent?.name,
+      grader: t.createdBy?.email,
+      score: t.qualityScorePercent,
+      scorecardVersion: t.scorecardVersion || 'legacy'
+    }));
+
+    if (dryRun) {
+      return res.json({
+        mode: 'DRY RUN',
+        message: `Found ${tickets.length} legacy tickets to migrate. Add ?apply=true to execute.`,
+        tickets: summary
+      });
+    }
+
+    const results = [];
+    for (const t of tickets) {
+      const result = await Ticket.updateOne(
+        { _id: t._id },
+        {
+          $set: {
+            scorecardVersion: 'v2',
+            scorecardValues: {},
+            scorecardVariant: null,
+            qualityScorePercent: null,
+            reoccurringError: null,
+            reoccurringErrorCategories: []
+          }
+        }
+      );
+      results.push({ ticketId: t.ticketId, agent: t.agent?.name, grader: t.createdBy?.email, modified: result.modifiedCount });
+    }
+
+    return res.json({
+      mode: 'APPLIED',
+      message: `Migrated ${results.length} tickets to V2`,
+      results
+    });
+  } catch (error) {
+    console.error('Migration error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+// ============ END TEMPORARY MIGRATION ENDPOINT ============
+
 module.exports = router;
