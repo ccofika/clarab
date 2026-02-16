@@ -27,6 +27,18 @@ const getDateRange = (period) => {
   return { startDate, endDate, days };
 };
 
+// V2 scorecard point values (MaestroQA rubric weights)
+const V2_POINT_VALUES = {
+  escalation: [35, 24, 13],
+  process: [35, 24, 13],
+  knowledge: [30, 23, 12]
+};
+const V2_MAX_POINTS = {
+  escalation: 35,
+  process: 35,
+  knowledge: 30
+};
+
 // Helper: calculate scorecard analysis from tickets
 // Split logic: at least half go into "areas of improvement" (lowest scores),
 // unless all items score 100%. Items are sorted by score ascending.
@@ -36,13 +48,23 @@ const calculateScorecardAnalysis = (tickets) => {
 
   tickets.forEach(ticket => {
     if (ticket.scorecardValues) {
+      const isV2 = ticket.scorecardVersion === 'v2';
+      const naIndex = isV2 ? 3 : 4;
+
       Object.entries(ticket.scorecardValues).forEach(([key, value]) => {
-        if (value !== null && value !== undefined && value !== 4) {
+        if (value !== null && value !== undefined && value !== naIndex) {
           if (!scorecardAverages[key]) {
             scorecardAverages[key] = 0;
             scorecardCounts[key] = 0;
           }
-          const scorePercent = (3 - value) / 3 * 100;
+          let scorePercent;
+          if (isV2 && V2_POINT_VALUES[key]) {
+            const points = V2_POINT_VALUES[key][value];
+            const max = V2_MAX_POINTS[key];
+            scorePercent = points !== undefined ? (points / max) * 100 : 0;
+          } else {
+            scorePercent = (3 - value) / 3 * 100;
+          }
           scorecardAverages[key] += scorePercent;
           scorecardCounts[key] += 1;
         }
@@ -199,7 +221,7 @@ exports.getDashboard = async (req, res) => {
       agent: { $in: agentIds },
       gradedDate: { $gte: startDate, $lte: endDate },
       qualityScorePercent: { $ne: null }
-    }).select('agent qualityScorePercent categories scorecardValues gradedDate').lean();
+    }).select('agent qualityScorePercent categories scorecardValues scorecardVersion gradedDate').lean();
 
     // Overall metrics
     const scorecardAnalysis = calculateScorecardAnalysis(tickets);
@@ -287,7 +309,7 @@ exports.getTeamDetail = async (req, res) => {
       agent: { $in: agentIds },
       gradedDate: { $gte: startDate, $lte: endDate },
       qualityScorePercent: { $ne: null }
-    }).select('agent qualityScorePercent categories scorecardValues gradedDate').lean();
+    }).select('agent qualityScorePercent categories scorecardValues scorecardVersion gradedDate').lean();
 
     // Metrics
     const scorecardAnalysis = calculateScorecardAnalysis(tickets);
@@ -353,7 +375,7 @@ exports.getAgentDetail = async (req, res) => {
       agent: agentId,
       gradedDate: { $gte: startDate, $lte: endDate },
       qualityScorePercent: { $ne: null }
-    }).select('ticketId qualityScorePercent categories feedback notes gradedDate scorecardValues scorecardVariant').lean();
+    }).select('ticketId qualityScorePercent categories feedback notes gradedDate scorecardValues scorecardVariant scorecardVersion').lean();
 
     // Previous period tickets
     const prevTickets = await Ticket.find({
@@ -483,7 +505,7 @@ exports.getCategoryTickets = async (req, res) => {
       categories: category
     })
     .populate('agent', 'name position team')
-    .select('ticketId qualityScorePercent categories feedback notes gradedDate agent scorecardValues scorecardVariant')
+    .select('ticketId qualityScorePercent categories feedback notes gradedDate agent scorecardValues scorecardVariant scorecardVersion')
     .sort({ qualityScorePercent: 1 })
     .lean();
 

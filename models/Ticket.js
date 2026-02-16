@@ -104,10 +104,26 @@ const ticketSchema = new mongoose.Schema({
   // Scorecard values stored as plain object
   // Key = value name in snake_case (e.g., 'opening_message', 'knowledge')
   // Value = index 0-4 (0=best, 3=worst, 4=N/A) or null if not set
+  // For V2 scorecard: 0=Nailed it, 1=Almost there, 2=Coach, 3=N/A
   scorecardValues: {
     type: Object,
     default: {}
   },
+  // Scorecard version: null = legacy (position-based), 'v2' = new unified scorecard
+  scorecardVersion: {
+    type: String,
+    default: null
+  },
+  // Reoccurring Error tracking (V2 scorecard)
+  reoccurringError: {
+    type: String,
+    enum: ['yes', 'no', 'unsure', null],
+    default: null
+  },
+  reoccurringErrorCategories: [{
+    type: String,
+    trim: true
+  }],
   // Review system fields
   // Original score when first sent to review (for analytics)
   originalReviewScore: {
@@ -162,6 +178,7 @@ ticketSchema.index({ priority: 1 });
 ticketSchema.index({ tags: 1 });
 ticketSchema.index({ weekNumber: 1, weekYear: 1 });
 ticketSchema.index({ qualityScorePercent: 1 });
+ticketSchema.index({ reoccurringError: 1 });
 ticketSchema.index({ gradedDate: -1 });
 ticketSchema.index({ status: 1, createdBy: 1, isArchived: 1 }); // For review queries
 ticketSchema.index({ firstReviewDate: -1 }); // For review analytics

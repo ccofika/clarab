@@ -4046,7 +4046,7 @@ exports.generateCoachingReport = async (req, res) => {
       gradedDate: { $gte: startDate, $lte: endDate },
       qualityScorePercent: { $lt: 90, $ne: null }
     })
-      .select('ticketId qualityScorePercent categories feedback notes gradedDate scorecardValues scorecardVariant')
+      .select('ticketId qualityScorePercent categories feedback notes gradedDate scorecardValues scorecardVariant scorecardVersion')
       .sort({ gradedDate: -1 })
       .lean();
 
@@ -4056,7 +4056,7 @@ exports.generateCoachingReport = async (req, res) => {
       gradedDate: { $gte: startDate, $lte: endDate },
       qualityScorePercent: { $ne: null }
     })
-      .select('qualityScorePercent scorecardValues')
+      .select('qualityScorePercent scorecardValues scorecardVersion')
       .lean();
 
     // Get previous period tickets for trend
@@ -4112,16 +4112,33 @@ exports.generateCoachingReport = async (req, res) => {
     const scorecardAverages = {};
     const scorecardCounts = {};
 
+    // V2 scorecard point values for weighted percentage calculation
+    const V2_POINT_VALUES = {
+      escalation: [35, 24, 13],
+      process: [35, 24, 13],
+      knowledge: [30, 23, 12]
+    };
+    const V2_MAX_POINTS = { escalation: 35, process: 35, knowledge: 30 };
+
     allCurrentTickets.forEach(ticket => {
       if (ticket.scorecardValues) {
+        const isV2 = ticket.scorecardVersion === 'v2';
+        const naIndex = isV2 ? 3 : 4;
+
         Object.entries(ticket.scorecardValues).forEach(([key, value]) => {
-          if (value !== null && value !== undefined && value !== 4) { // Exclude N/A (4)
+          if (value !== null && value !== undefined && value !== naIndex) {
             if (!scorecardAverages[key]) {
               scorecardAverages[key] = 0;
               scorecardCounts[key] = 0;
             }
-            // Convert 0-3 to percentage (0=100%, 1=75%, 2=50%, 3=25%)
-            const scorePercent = (3 - value) / 3 * 100;
+            let scorePercent;
+            if (isV2 && V2_POINT_VALUES[key]) {
+              const points = V2_POINT_VALUES[key][value];
+              const max = V2_MAX_POINTS[key];
+              scorePercent = points !== undefined ? (points / max) * 100 : 0;
+            } else {
+              scorePercent = (3 - value) / 3 * 100;
+            }
             scorecardAverages[key] += scorePercent;
             scorecardCounts[key] += 1;
           }
@@ -4827,7 +4844,9 @@ exports.updateReviewTicket = async (req, res) => {
       categories,
       scorecardVariant,
       scorecardValues,
-      additionalNote
+      additionalNote,
+      reoccurringError,
+      reoccurringErrorCategories
     } = req.body;
 
     // Update allowed fields
@@ -4838,6 +4857,8 @@ exports.updateReviewTicket = async (req, res) => {
     if (scorecardVariant !== undefined) ticket.scorecardVariant = scorecardVariant;
     if (scorecardValues !== undefined) ticket.scorecardValues = scorecardValues;
     if (additionalNote !== undefined) ticket.additionalNote = additionalNote;
+    if (reoccurringError !== undefined) ticket.reoccurringError = reoccurringError;
+    if (reoccurringErrorCategories !== undefined) ticket.reoccurringErrorCategories = reoccurringErrorCategories;
 
     await ticket.save();
 
@@ -5026,6 +5047,9 @@ exports.getReviewAnalytics = async (req, res) => {
         categories: ticket.categories,
         scorecardValues: ticket.scorecardValues,
         scorecardVariant: ticket.scorecardVariant,
+        scorecardVersion: ticket.scorecardVersion,
+        reoccurringError: ticket.reoccurringError,
+        reoccurringErrorCategories: ticket.reoccurringErrorCategories,
         dateEntered: ticket.dateEntered,
         agentPosition: ticket.agent?.position
       });
@@ -5138,6 +5162,9 @@ exports.backupGraderTickets = async (req, res) => {
         weekYear: t.weekYear,
         scorecardVariant: t.scorecardVariant,
         scorecardValues: t.scorecardValues,
+        scorecardVersion: t.scorecardVersion,
+        reoccurringError: t.reoccurringError,
+        reoccurringErrorCategories: t.reoccurringErrorCategories,
         additionalNote: t.additionalNote,
         reviewHistory: t.reviewHistory,
         createdAt: t.createdAt,
