@@ -185,7 +185,7 @@ const bookmarkRoutes = require('./routes/bookmarkRoutes');
 const userRoutes = require('./routes/userRoutes');
 const imageRoutes = require('./routes/imageRoutes');
 const developerRoutes = require('./routes/developerRoutes');
-const googleSheetsRoutes = require('./routes/googleSheetsRoutes');
+// const googleSheetsRoutes = require('./routes/googleSheetsRoutes'); // PAUSED - saves ~30-40MB RAM
 const slackRoutes = require('./routes/slackRoutes');
 const qaRoutes = require('./routes/qaRoutes');
 const scrapingRoutes = require('./routes/scrapingRoutes');
@@ -215,7 +215,7 @@ app.use('/api/bookmarks', bookmarkRoutes);
 app.use('/api/users', userRoutes); // Changed from /api/user to /api/users for consistency
 app.use('/api/images', imageRoutes);
 app.use('/api/developer', developerRoutes); // Developer-only endpoints
-app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets integration
+// app.use('/api/google-sheets', googleSheetsRoutes); // Google Sheets - PAUSED
 app.use('/api/slack', slackRoutes); // Slack integration
 app.use('/api/qa', qaRoutes); // QA Manager endpoints
 app.use('/api/qa/scrape', scrapingRoutes); // QA Scraping endpoints
