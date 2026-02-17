@@ -727,17 +727,6 @@ exports.createTicket = async (req, res) => {
     const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
     const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
 
-    // DEBUG: Log review logic for marcelavasquez
-    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
-      logger.info(`[MARCELA DEBUG] createTicket - raw qualityScorePercent: "${req.body.qualityScorePercent}" (type: ${typeof req.body.qualityScorePercent})`);
-      logger.info(`[MARCELA DEBUG] createTicket - parsed qualityScore: ${qualityScore}, isNaN: ${isNaN(qualityScore)}`);
-      logger.info(`[MARCELA DEBUG] createTicket - role: "${req.user.role}", ticketShouldGoToReview: ${ticketShouldGoToReview}`);
-      logger.info(`[MARCELA DEBUG] createTicket - condition check: !isNaN=${!isNaN(qualityScore)}, <85=${qualityScore < 85}, shouldReview=${ticketShouldGoToReview}`);
-      logger.info(`[MARCELA DEBUG] createTicket - will go to Draft: ${!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview}`);
-      logger.info(`[MARCELA DEBUG] createTicket - ticketData.status before review logic: "${ticketData.status}"`);
-      logger.info(`[MARCELA DEBUG] createTicket - scorecardValues: ${JSON.stringify(req.body.scorecardValues)}`);
-    }
-
     if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
       ticketData.status = 'Draft';
       ticketData.originalReviewScore = qualityScore;
@@ -750,10 +739,7 @@ exports.createTicket = async (req, res) => {
       logger.info(`Ticket will be sent to review - score ${qualityScore}% < 85% by user ${req.user.email}`);
     }
 
-    // DEBUG: Log final status for marcelavasquez
-    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
-      logger.info(`[MARCELA DEBUG] createTicket - FINAL status: "${ticketData.status}"`);
-    }
+
 
     const ticket = await Ticket.create(ticketData);
 
@@ -856,16 +842,6 @@ exports.updateTicket = async (req, res) => {
     const newQualityScore = req.body.qualityScorePercent !== undefined
       ? parseFloat(req.body.qualityScorePercent)
       : currentTicket.qualityScorePercent;
-
-    // DEBUG: Log review logic for marcelavasquez
-    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
-      logger.info(`[MARCELA DEBUG] updateTicket - ticketId: ${currentTicket.ticketId}, currentStatus: "${currentTicket.status}"`);
-      logger.info(`[MARCELA DEBUG] updateTicket - raw qualityScorePercent: "${req.body.qualityScorePercent}" (type: ${typeof req.body.qualityScorePercent})`);
-      logger.info(`[MARCELA DEBUG] updateTicket - parsed newQualityScore: ${newQualityScore}, isNaN: ${isNaN(newQualityScore)}`);
-      logger.info(`[MARCELA DEBUG] updateTicket - currentTicket.qualityScorePercent: ${currentTicket.qualityScorePercent}`);
-      logger.info(`[MARCELA DEBUG] updateTicket - role: "${req.user.role}", ticketShouldGoToReview: ${ticketShouldGoToReview}`);
-      logger.info(`[MARCELA DEBUG] updateTicket - hasBeenReviewed: ${currentTicket.reviewHistory?.some(h => h.action === 'approved')}`);
-    }
 
     // Handle review logic based on current status
     // Only applies to Selected and 'Waiting on your input' statuses
@@ -1330,6 +1306,27 @@ exports.bulkChangeStatus = async (req, res) => {
           message: 'No tickets with "Waiting on your input" status to change',
           count: 0
         });
+      }
+    }
+
+    // Prevent Draft → Selected if score < 85% and user is not a reviewer
+    if (status === 'Selected') {
+      const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
+      const isReviewer = REVIEWER_ROLES_LOCAL.includes(req.user.role);
+
+      if (!isReviewer) {
+        // Exclude Draft tickets with score < 85% from the bulk update
+        const draftTicketsBelow85 = await Ticket.find({
+          _id: { $in: ticketIds },
+          status: 'Draft',
+          qualityScorePercent: { $lt: 85 }
+        }).select('_id ticketId qualityScorePercent');
+
+        if (draftTicketsBelow85.length > 0) {
+          const blockedIds = draftTicketsBelow85.map(t => t._id.toString());
+          filter._id = { $in: ticketIds.filter(id => !blockedIds.includes(id.toString())) };
+          logger.info(`Bulk status change: blocked ${draftTicketsBelow85.length} Draft ticket(s) with score < 85% from changing to Selected by user ${req.user.email} (tickets: ${draftTicketsBelow85.map(t => t.ticketId).join(', ')})`);
+        }
       }
     }
 
