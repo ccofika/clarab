@@ -727,6 +727,17 @@ exports.createTicket = async (req, res) => {
     const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
     const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
 
+    // DEBUG: Log review logic for marcelavasquez
+    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
+      logger.info(`[MARCELA DEBUG] createTicket - raw qualityScorePercent: "${req.body.qualityScorePercent}" (type: ${typeof req.body.qualityScorePercent})`);
+      logger.info(`[MARCELA DEBUG] createTicket - parsed qualityScore: ${qualityScore}, isNaN: ${isNaN(qualityScore)}`);
+      logger.info(`[MARCELA DEBUG] createTicket - role: "${req.user.role}", ticketShouldGoToReview: ${ticketShouldGoToReview}`);
+      logger.info(`[MARCELA DEBUG] createTicket - condition check: !isNaN=${!isNaN(qualityScore)}, <85=${qualityScore < 85}, shouldReview=${ticketShouldGoToReview}`);
+      logger.info(`[MARCELA DEBUG] createTicket - will go to Draft: ${!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview}`);
+      logger.info(`[MARCELA DEBUG] createTicket - ticketData.status before review logic: "${ticketData.status}"`);
+      logger.info(`[MARCELA DEBUG] createTicket - scorecardValues: ${JSON.stringify(req.body.scorecardValues)}`);
+    }
+
     if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
       ticketData.status = 'Draft';
       ticketData.originalReviewScore = qualityScore;
@@ -737,6 +748,11 @@ exports.createTicket = async (req, res) => {
         scoreAtAction: qualityScore
       }];
       logger.info(`Ticket will be sent to review - score ${qualityScore}% < 85% by user ${req.user.email}`);
+    }
+
+    // DEBUG: Log final status for marcelavasquez
+    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
+      logger.info(`[MARCELA DEBUG] createTicket - FINAL status: "${ticketData.status}"`);
     }
 
     const ticket = await Ticket.create(ticketData);
@@ -840,6 +856,16 @@ exports.updateTicket = async (req, res) => {
     const newQualityScore = req.body.qualityScorePercent !== undefined
       ? parseFloat(req.body.qualityScorePercent)
       : currentTicket.qualityScorePercent;
+
+    // DEBUG: Log review logic for marcelavasquez
+    if (req.user.email?.toLowerCase() === 'marcelavasquez@mebit.io') {
+      logger.info(`[MARCELA DEBUG] updateTicket - ticketId: ${currentTicket.ticketId}, currentStatus: "${currentTicket.status}"`);
+      logger.info(`[MARCELA DEBUG] updateTicket - raw qualityScorePercent: "${req.body.qualityScorePercent}" (type: ${typeof req.body.qualityScorePercent})`);
+      logger.info(`[MARCELA DEBUG] updateTicket - parsed newQualityScore: ${newQualityScore}, isNaN: ${isNaN(newQualityScore)}`);
+      logger.info(`[MARCELA DEBUG] updateTicket - currentTicket.qualityScorePercent: ${currentTicket.qualityScorePercent}`);
+      logger.info(`[MARCELA DEBUG] updateTicket - role: "${req.user.role}", ticketShouldGoToReview: ${ticketShouldGoToReview}`);
+      logger.info(`[MARCELA DEBUG] updateTicket - hasBeenReviewed: ${currentTicket.reviewHistory?.some(h => h.action === 'approved')}`);
+    }
 
     // Handle review logic based on current status
     // Only applies to Selected and 'Waiting on your input' statuses

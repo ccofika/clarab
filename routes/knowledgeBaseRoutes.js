@@ -14,6 +14,7 @@ const {
   updatePage,
   deletePage,
   reorderPage,
+  copyBlockToPage,
   // Admin management
   getAdmins,
   addAdmin,
@@ -114,6 +115,9 @@ router.delete('/pages/:id', protect, kbAdminAuth, deletePage);
 
 // Reorder page
 router.put('/pages/:id/reorder', protect, kbAdminAuth, reorderPage);
+
+// Copy block to another page
+router.post('/pages/:targetPageId/copy-block', protect, kbAdminAuth, copyBlockToPage);
 
 // ==================== SUPERADMIN ROUTES ====================
 

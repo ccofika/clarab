@@ -368,6 +368,61 @@ exports.reorderPage = async (req, res) => {
   }
 };
 
+// Copy a block to another page (append at bottom)
+exports.copyBlockToPage = async (req, res) => {
+  try {
+    const { targetPageId } = req.params;
+    const { block } = req.body;
+
+    if (!block || !block.type) {
+      return res.status(400).json({ message: 'Block data is required' });
+    }
+
+    const targetPage = await KBPage.findById(targetPageId);
+    if (!targetPage || targetPage.isDeleted) {
+      return res.status(404).json({ message: 'Target page not found' });
+    }
+
+    // Generate a new block ID and deep-clone content
+    const newBlock = {
+      ...block,
+      id: `block_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
+    };
+    if (block.defaultContent) {
+      newBlock.defaultContent = JSON.parse(JSON.stringify(block.defaultContent));
+    }
+    if (block.variants) {
+      newBlock.variants = JSON.parse(JSON.stringify(block.variants));
+    }
+    if (block.properties) {
+      newBlock.properties = JSON.parse(JSON.stringify(block.properties));
+    }
+
+    targetPage.blocks.push(newBlock);
+    targetPage.lastModifiedBy = req.user._id;
+    await targetPage.save();
+
+    try {
+      await KBEditLog.logEdit(targetPage._id, req.user._id, 'update', {
+        before: { blocks: targetPage.blocks.length - 1 },
+        after: { blocks: targetPage.blocks.length },
+        summary: `Block copied from another page to "${targetPage.title}"`
+      });
+    } catch (logError) {
+      console.error('Error logging copy-block edit:', logError);
+    }
+
+    clearSearchCache();
+    res.json({
+      message: 'Block copied successfully',
+      targetPageTitle: targetPage.title
+    });
+  } catch (error) {
+    console.error('Error copying block to page:', error);
+    res.status(500).json({ message: error.message || 'Error copying block' });
+  }
+};
+
 // ==================== ADMIN MANAGEMENT ====================
 
 // Get all admins
