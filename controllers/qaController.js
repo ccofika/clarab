@@ -724,8 +724,10 @@ exports.createTicket = async (req, res) => {
     // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
     const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
     const ALWAYS_REVIEW_EMAILS = ['filipkozomara@mebit.io', 'vasilijevitorovic@mebit.io'];
+    const SKIP_REVIEW_EMAILS = ['adriancorona@mebit.io', 'marcelavasquez@mebit.io'];
     const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
-    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
+    const isSkipReviewUser = SKIP_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
+    const ticketShouldGoToReview = (!REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser) && !isSkipReviewUser;
 
     if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
       ticketData.status = 'Draft';
@@ -836,8 +838,10 @@ exports.updateTicket = async (req, res) => {
     // Reviewers (qa-admin, admin) skip review, other graders' tickets go to review
     const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
     const ALWAYS_REVIEW_EMAILS = ['filipkozomara@mebit.io', 'vasilijevitorovic@mebit.io'];
+    const SKIP_REVIEW_EMAILS = ['adriancorona@mebit.io', 'marcelavasquez@mebit.io'];
     const isAlwaysReviewUser = ALWAYS_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
-    const ticketShouldGoToReview = !REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser;
+    const isSkipReviewUser = SKIP_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
+    const ticketShouldGoToReview = (!REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser) && !isSkipReviewUser;
 
     const newQualityScore = req.body.qualityScorePercent !== undefined
       ? parseFloat(req.body.qualityScorePercent)
@@ -1312,9 +1316,11 @@ exports.bulkChangeStatus = async (req, res) => {
     // Prevent Draft → Selected if score < 85% and user is not a reviewer
     if (status === 'Selected') {
       const REVIEWER_ROLES_LOCAL = ['admin', 'qa-admin'];
+      const SKIP_REVIEW_EMAILS = ['adriancorona@mebit.io', 'marcelavasquez@mebit.io'];
       const isReviewer = REVIEWER_ROLES_LOCAL.includes(req.user.role);
+      const isSkipReviewUser = SKIP_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
 
-      if (!isReviewer) {
+      if (!isReviewer && !isSkipReviewUser) {
         // Exclude Draft tickets with score < 85% from the bulk update
         const draftTicketsBelow85 = await Ticket.find({
           _id: { $in: ticketIds },
