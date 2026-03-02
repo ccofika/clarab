@@ -105,6 +105,9 @@ const {
   approveTicket,
   denyTicket,
   getReviewAnalytics,
+  getReviewHistory,
+  getReviewHistoryStats,
+  getReviewReviewers,
   getReviewPendingCount,
   // Minimized ticket (dock feature)
   getMinimizedTicket,
@@ -351,6 +354,15 @@ router.get('/review/pending-count', reviewAuth, getReviewPendingCount);
 
 // Review analytics
 router.get('/review/analytics', reviewAuth, getReviewAnalytics);
+
+// Review history (all tickets that passed through review)
+router.get('/review/history', reviewAuth, getReviewHistory);
+
+// Review history KPI stats (aggregated, same filters)
+router.get('/review/history/stats', reviewAuth, getReviewHistoryStats);
+
+// Review reviewers list (for filter dropdown - cached separately)
+router.get('/review/reviewers', reviewAuth, getReviewReviewers);
 
 // Review tickets CRUD
 router.get('/review/tickets', reviewAuth, getReviewTickets);

@@ -881,8 +881,12 @@ exports.updateTicket = async (req, res) => {
       if (!isNaN(newQualityScore) && newQualityScore >= 85) {
         req.body.status = 'Selected';
         logger.info(`Ticket ${currentTicket.ticketId} moved from Draft to Selected - score ${newQualityScore}% >= 85%`);
+      } else if (!isNaN(newQualityScore) && newQualityScore !== currentTicket.qualityScorePercent) {
+        // Score changed while still in Draft (pending review) - update originalReviewScore
+        // so the review diff reflects the score the reviewer actually sees, not the first one
+        req.body.originalReviewScore = newQualityScore;
+        logger.info(`Ticket ${currentTicket.ticketId} score updated while in Draft: ${currentTicket.qualityScorePercent}% -> ${newQualityScore}%, originalReviewScore updated`);
       }
-      // If score is still < 85%, keep in Draft (no status change needed)
     }
 
     if (currentTicket.status === 'Waiting on your input') {
@@ -906,10 +910,9 @@ exports.updateTicket = async (req, res) => {
           date: new Date(),
           scoreAtAction: newQualityScore
         }];
-        // Keep the original review score from first submission
-        if (!currentTicket.originalReviewScore) {
-          req.body.originalReviewScore = newQualityScore;
-        }
+        // Always update originalReviewScore to the score being resubmitted
+        // so the review diff reflects this submission, not a previous one
+        req.body.originalReviewScore = newQualityScore;
         logger.info(`Ticket ${currentTicket.ticketId} resubmitted to review - score ${newQualityScore}%`);
       } else if (requestedStatus === 'Graded') {
         // Cannot go directly to Graded from 'Waiting on your input'
@@ -5087,10 +5090,49 @@ exports.getReviewAnalytics = async (req, res) => {
       graderStats[graderId].totalScoreDifference += Math.abs(scoreDifference);
     }
 
+    // Count ALL tickets per grader in the same date period (reviewed + non-reviewed).
+    // Then: overall = allTickets, non-reviewed = allTickets - reviewedTickets.
+    // Overall difference = totalReviewDiff / allTickets (non-reviewed contribute 0 diff).
+    const graderIds = Object.keys(graderStats);
+    const mongoose = require('mongoose');
+
+    const allTicketsFilter = {};
+
+    if (createdBy) {
+      allTicketsFilter.createdBy = new mongoose.Types.ObjectId(createdBy);
+    } else if (graderIds.length > 0) {
+      allTicketsFilter.createdBy = { $in: graderIds.map(id => new mongoose.Types.ObjectId(id)) };
+    }
+
+    if (dateFrom || dateTo) {
+      allTicketsFilter.dateEntered = {};
+      if (dateFrom) allTicketsFilter.dateEntered.$gte = new Date(dateFrom);
+      if (dateTo) allTicketsFilter.dateEntered.$lte = new Date(dateTo);
+    }
+
+    const allTicketCounts = await Ticket.aggregate([
+      { $match: allTicketsFilter },
+      { $group: { _id: '$createdBy', count: { $sum: 1 } } }
+    ]);
+
+    const allTicketsMap = {};
+    for (const item of allTicketCounts) {
+      allTicketsMap[item._id.toString()] = item.count;
+    }
+
     // Calculate averages and sort tickets by score difference (worst first)
     const gradersArray = Object.values(graderStats).map(grader => {
       grader.avgScoreDifference = grader.totalTickets > 0
         ? Math.round((grader.totalScoreDifference / grader.totalTickets) * 100) / 100
+        : 0;
+
+      // Overall = all tickets by this grader in the period
+      grader.totalOverallTickets = allTicketsMap[grader.graderId] || grader.totalTickets;
+
+      // Overall avg difference = review diff / all tickets
+      // Non-reviewed tickets contribute 0 to numerator but increase denominator
+      grader.overallAvgDifference = grader.totalOverallTickets > 0
+        ? Math.round((grader.totalScoreDifference / grader.totalOverallTickets) * 100) / 100
         : 0;
 
       // Sort tickets by absolute score difference (larger difference = worse)
@@ -5111,6 +5153,289 @@ exports.getReviewAnalytics = async (req, res) => {
     });
   } catch (error) {
     logger.error('Error fetching review analytics:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get review history (paginated tickets that passed through review)
+// @route   GET /api/qa/review/history
+// @access  Private (Reviewers only)
+exports.getReviewHistory = async (req, res) => {
+  try {
+    const { reviewer, agent, grader, dateFrom, dateTo, page = 1, limit = 30 } = req.query;
+
+    // Build filter - tickets that have been approved or denied
+    const filter = {
+      reviewHistory: {
+        $elemMatch: {
+          action: { $in: ['approved', 'denied'] }
+        }
+      }
+    };
+
+    if (grader) {
+      filter.createdBy = grader;
+    }
+
+    if (agent) {
+      filter.agent = agent;
+    }
+
+    if (reviewer) {
+      // Override the reviewHistory filter to also match specific reviewer
+      filter.reviewHistory = {
+        $elemMatch: {
+          action: { $in: ['approved', 'denied'] },
+          reviewedBy: reviewer
+        }
+      };
+    }
+
+    if (dateFrom || dateTo) {
+      filter.firstReviewDate = {};
+      if (dateFrom) filter.firstReviewDate.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        endDate.setHours(23, 59, 59, 999);
+        filter.firstReviewDate.$lte = endDate;
+      }
+    }
+
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    // Run count + paginated query in parallel
+    const [total, tickets] = await Promise.all([
+      Ticket.countDocuments(filter),
+      Ticket.find(filter)
+        .populate('agent', 'name team position')
+        .populate('createdBy', 'name email')
+        .populate('reviewHistory.reviewedBy', 'name email')
+        .sort({ firstReviewDate: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean()
+    ]);
+
+    // Map tickets with pre-computed score diff
+    const mappedTickets = tickets.map(t => {
+      const original = t.originalReviewScore;
+      const final = t.qualityScorePercent;
+      const scoreDiff = (original != null && final != null) ? final - original : null;
+
+      return {
+        _id: t._id,
+        ticketId: t.ticketId,
+        agent: t.agent,
+        grader: t.createdBy,
+        qualityScorePercent: final,
+        originalReviewScore: original,
+        scoreDiff,
+        status: t.status,
+        firstReviewDate: t.firstReviewDate,
+        dateEntered: t.dateEntered,
+        additionalNote: t.additionalNote,
+        notes: t.notes,
+        reviewHistory: t.reviewHistory
+      };
+    });
+
+    res.json({
+      tickets: mappedTickets,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        pages: Math.ceil(total / limitNum)
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching review history:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get review history KPI stats (fast aggregation, same filters as history)
+// @route   GET /api/qa/review/history/stats
+// @access  Private (Reviewers only)
+exports.getReviewHistoryStats = async (req, res) => {
+  try {
+    const { reviewer, agent, grader, dateFrom, dateTo } = req.query;
+    const mongoose = require('mongoose');
+
+    // Build aggregation match stage
+    const match = {
+      'reviewHistory.action': { $in: ['approved', 'denied'] }
+    };
+
+    if (grader) match.createdBy = new mongoose.Types.ObjectId(grader);
+    if (agent) match.agent = new mongoose.Types.ObjectId(agent);
+    if (dateFrom || dateTo) {
+      match.firstReviewDate = {};
+      if (dateFrom) match.firstReviewDate.$gte = new Date(dateFrom);
+      if (dateTo) {
+        const endDate = new Date(dateTo);
+        endDate.setHours(23, 59, 59, 999);
+        match.firstReviewDate.$lte = endDate;
+      }
+    }
+
+    // If reviewer filter, we need to unwind first then re-group
+    const pipeline = [];
+
+    if (reviewer) {
+      // Pre-filter tickets that have at least one action by this reviewer
+      match['reviewHistory'] = {
+        $elemMatch: {
+          action: { $in: ['approved', 'denied'] },
+          reviewedBy: new mongoose.Types.ObjectId(reviewer)
+        }
+      };
+    }
+
+    pipeline.push({ $match: match });
+
+    // Unwind reviewHistory to get individual actions
+    pipeline.push({ $unwind: '$reviewHistory' });
+
+    // Only keep approved/denied actions
+    const actionMatch = { 'reviewHistory.action': { $in: ['approved', 'denied'] } };
+    if (reviewer) {
+      actionMatch['reviewHistory.reviewedBy'] = new mongoose.Types.ObjectId(reviewer);
+    }
+    pipeline.push({ $match: actionMatch });
+
+    // Compute per-ticket stats from the last review action
+    // (use $last after sorting by date within each ticket)
+    pipeline.push({ $sort: { 'reviewHistory.date': 1 } });
+    pipeline.push({
+      $group: {
+        _id: '$_id',
+        ticketId: { $first: '$ticketId' },
+        originalScore: { $first: '$originalReviewScore' },
+        finalScore: { $first: '$qualityScorePercent' },
+        lastAction: { $last: '$reviewHistory.action' },
+        agent: { $first: '$agent' },
+        grader: { $first: '$createdBy' },
+        reviewer: { $last: '$reviewHistory.reviewedBy' }
+      }
+    });
+
+    // Aggregate final stats
+    pipeline.push({
+      $group: {
+        _id: null,
+        totalTickets: { $sum: 1 },
+        approvedCount: {
+          $sum: { $cond: [{ $eq: ['$lastAction', 'approved'] }, 1, 0] }
+        },
+        deniedCount: {
+          $sum: { $cond: [{ $eq: ['$lastAction', 'denied'] }, 1, 0] }
+        },
+        avgOriginalScore: { $avg: '$originalScore' },
+        avgFinalScore: { $avg: '$finalScore' },
+        totalScoreDiff: {
+          $sum: { $subtract: ['$finalScore', '$originalScore'] }
+        },
+        totalAbsScoreDiff: {
+          $sum: { $abs: { $subtract: ['$finalScore', '$originalScore'] } }
+        },
+        uniqueAgents: { $addToSet: '$agent' },
+        uniqueGraders: { $addToSet: '$grader' },
+        uniqueReviewers: { $addToSet: '$reviewer' }
+      }
+    });
+
+    pipeline.push({
+      $project: {
+        _id: 0,
+        totalTickets: 1,
+        approvedCount: 1,
+        deniedCount: 1,
+        approvalRate: {
+          $cond: [
+            { $gt: ['$totalTickets', 0] },
+            { $multiply: [{ $divide: ['$approvedCount', '$totalTickets'] }, 100] },
+            0
+          ]
+        },
+        avgOriginalScore: { $round: ['$avgOriginalScore', 1] },
+        avgFinalScore: { $round: ['$avgFinalScore', 1] },
+        avgScoreDiff: {
+          $cond: [
+            { $gt: ['$totalTickets', 0] },
+            { $round: [{ $divide: ['$totalScoreDiff', '$totalTickets'] }, 1] },
+            0
+          ]
+        },
+        avgAbsScoreDiff: {
+          $cond: [
+            { $gt: ['$totalTickets', 0] },
+            { $round: [{ $divide: ['$totalAbsScoreDiff', '$totalTickets'] }, 1] },
+            0
+          ]
+        },
+        uniqueAgentCount: { $size: '$uniqueAgents' },
+        uniqueGraderCount: { $size: '$uniqueGraders' },
+        uniqueReviewerCount: { $size: '$uniqueReviewers' }
+      }
+    });
+
+    const results = await Ticket.aggregate(pipeline);
+    const stats = results[0] || {
+      totalTickets: 0,
+      approvedCount: 0,
+      deniedCount: 0,
+      approvalRate: 0,
+      avgOriginalScore: 0,
+      avgFinalScore: 0,
+      avgScoreDiff: 0,
+      avgAbsScoreDiff: 0,
+      uniqueAgentCount: 0,
+      uniqueGraderCount: 0,
+      uniqueReviewerCount: 0
+    };
+
+    res.json(stats);
+  } catch (error) {
+    logger.error('Error fetching review history stats:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Get unique reviewers who have approved/denied tickets (for filter dropdown)
+// @route   GET /api/qa/review/reviewers
+// @access  Private (Reviewers only)
+exports.getReviewReviewers = async (req, res) => {
+  try {
+    const result = await Ticket.aggregate([
+      { $match: { 'reviewHistory.action': { $in: ['approved', 'denied'] } } },
+      { $unwind: '$reviewHistory' },
+      { $match: { 'reviewHistory.action': { $in: ['approved', 'denied'] } } },
+      { $group: { _id: '$reviewHistory.reviewedBy' } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'user'
+        }
+      },
+      { $unwind: '$user' },
+      {
+        $project: {
+          _id: '$user._id',
+          name: '$user.name',
+          email: '$user.email'
+        }
+      },
+      { $sort: { name: 1 } }
+    ]);
+
+    res.json(result);
+  } catch (error) {
+    logger.error('Error fetching review reviewers:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };
