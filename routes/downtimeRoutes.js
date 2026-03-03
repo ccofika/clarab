@@ -4,7 +4,7 @@ const router = express.Router();
 // ============================================
 // DOWNTIME TOGGLE - Change this to true/false
 // ============================================
-const DOWNTIME_ACTIVE = true;
+const DOWNTIME_ACTIVE = false;
 // ============================================
 
 router.get('/', (req, res) => {
