@@ -291,6 +291,8 @@ const schemas = {
       .allow(null),
     reoccurringErrorCategories: Joi.array()
       .items(Joi.string().trim())
+      .optional(),
+    isNote: Joi.boolean()
       .optional()
   }),
 
@@ -365,6 +367,8 @@ const schemas = {
       .allow(null),
     reoccurringErrorCategories: Joi.array()
       .items(Joi.string().trim())
+      .optional(),
+    isNote: Joi.boolean()
       .optional()
   })
 };

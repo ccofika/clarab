@@ -729,7 +729,8 @@ exports.createTicket = async (req, res) => {
     const isSkipReviewUser = SKIP_REVIEW_EMAILS.includes(req.user.email?.toLowerCase());
     const ticketShouldGoToReview = (!REVIEWER_ROLES_LOCAL.includes(req.user.role) || isAlwaysReviewUser) && !isSkipReviewUser;
 
-    if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview) {
+    // Note tickets never go to review
+    if (!isNaN(qualityScore) && qualityScore < 85 && ticketShouldGoToReview && !req.body.isNote) {
       ticketData.status = 'Draft';
       ticketData.originalReviewScore = qualityScore;
       ticketData.firstReviewDate = new Date();
@@ -850,8 +851,10 @@ exports.updateTicket = async (req, res) => {
     // Handle review logic based on current status
     // Only applies to Selected and 'Waiting on your input' statuses
     // Graded tickets don't go through review regardless of score changes
+    // Note tickets NEVER go to review
+    const isNoteTicket = req.body.isNote || currentTicket.isNote;
 
-    if (currentTicket.status === 'Selected') {
+    if (currentTicket.status === 'Selected' && !isNoteTicket) {
       // Check if ticket has already been through review (has an 'approved' action in history)
       const hasBeenReviewed = currentTicket.reviewHistory &&
         currentTicket.reviewHistory.some(h => h.action === 'approved');
@@ -875,7 +878,7 @@ exports.updateTicket = async (req, res) => {
       }
     }
 
-    if (currentTicket.status === 'Draft') {
+    if (currentTicket.status === 'Draft' && !isNoteTicket) {
       // Grader is editing a ticket that's pending review
       // If score is now >= 85%, automatically move to Selected
       if (!isNaN(newQualityScore) && newQualityScore >= 85) {
@@ -889,7 +892,7 @@ exports.updateTicket = async (req, res) => {
       }
     }
 
-    if (currentTicket.status === 'Waiting on your input') {
+    if (currentTicket.status === 'Waiting on your input' && !isNoteTicket) {
       // Grader is responding to a denied ticket
       const requestedStatus = req.body.status;
 
@@ -1436,11 +1439,15 @@ exports.getDashboardStats = async (req, res) => {
     const userId = req.user._id;
 
     const totalAgents = await Agent.countDocuments({ createdBy: userId });
-    const totalTickets = await Ticket.countDocuments({ isArchived: false, createdBy: userId });
-    const gradedTickets = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId });
-    const selectedTickets = await Ticket.countDocuments({ status: 'Selected', isArchived: false, createdBy: userId });
+    const totalTickets = await Ticket.countDocuments({ isArchived: false, createdBy: userId, isNote: { $ne: true } });
+    const gradedTickets = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId, isNote: { $ne: true } });
+    const selectedTickets = await Ticket.countDocuments({ status: 'Selected', isArchived: false, createdBy: userId, isNote: { $ne: true } });
     const draftTickets = await Ticket.countDocuments({ status: 'Draft', isArchived: false, createdBy: userId });
     const waitingTickets = await Ticket.countDocuments({ status: 'Waiting on your input', isArchived: false, createdBy: userId });
+
+    // Note counts
+    const totalNotes = await Ticket.countDocuments({ isArchived: false, createdBy: userId, isNote: true });
+    const gradedNotes = await Ticket.countDocuments({ status: 'Graded', isArchived: false, createdBy: userId, isNote: true });
 
     // Average quality score for current user's tickets
     const avgScoreResult = await Ticket.aggregate([
@@ -1465,14 +1472,22 @@ exports.getDashboardStats = async (req, res) => {
       { $match: { isArchived: false, createdBy: userId } },
       { $group: {
           _id: '$agent',
-          ticketCount: { $sum: 1 },
+          ticketCount: {
+            $sum: { $cond: [{ $ne: ['$isNote', true] }, 1, 0] }
+          },
           gradedCount: {
-            $sum: { $cond: [{ $eq: ['$status', 'Graded'] }, 1, 0] }
+            $sum: { $cond: [{ $and: [{ $eq: ['$status', 'Graded'] }, { $ne: ['$isNote', true] }] }, 1, 0] }
+          },
+          noteCount: {
+            $sum: { $cond: [{ $eq: ['$isNote', true] }, 1, 0] }
+          },
+          gradedNoteCount: {
+            $sum: { $cond: [{ $and: [{ $eq: ['$status', 'Graded'] }, { $eq: ['$isNote', true] }] }, 1, 0] }
           },
           avgScore: {
             $avg: {
               $cond: [
-                { $ne: ['$qualityScorePercent', null] },
+                { $and: [{ $ne: ['$qualityScorePercent', null] }, { $ne: ['$isNote', true] }] },
                 '$qualityScorePercent',
                 null
               ]
@@ -1494,6 +1509,8 @@ exports.getDashboardStats = async (req, res) => {
           agentName: '$agentInfo.name',
           ticketCount: 1,
           gradedCount: 1,
+          noteCount: 1,
+          gradedNoteCount: 1,
           avgScore: { $round: ['$avgScore', 2] }
         }
       },
@@ -1507,6 +1524,8 @@ exports.getDashboardStats = async (req, res) => {
       selectedTickets,
       draftTickets,
       waitingTickets,
+      totalNotes,
+      gradedNotes,
       avgScore,
       ticketsThisWeek,
       agentStats,
@@ -2675,7 +2694,9 @@ exports.getActiveOverview = async (req, res) => {
             selected: 0,
             avgScore: 0,
             totalScore: 0,
-            scoredCount: 0
+            scoredCount: 0,
+            noteCount: 0,
+            gradedNoteCount: 0
           }
         };
       });
@@ -2685,17 +2706,24 @@ exports.getActiveOverview = async (req, res) => {
         const agentId = ticket.agent?._id?.toString();
         if (agentId && agentGroups[agentId]) {
           agentGroups[agentId].tickets.push(ticket);
-          agentGroups[agentId].stats.total++;
 
-          if (ticket.status === 'Graded') {
-            agentGroups[agentId].stats.graded++;
+          if (ticket.isNote) {
+            agentGroups[agentId].stats.noteCount++;
+            if (ticket.status === 'Graded') {
+              agentGroups[agentId].stats.gradedNoteCount++;
+            }
           } else {
-            agentGroups[agentId].stats.selected++;
-          }
+            agentGroups[agentId].stats.total++;
+            if (ticket.status === 'Graded') {
+              agentGroups[agentId].stats.graded++;
+            } else {
+              agentGroups[agentId].stats.selected++;
+            }
 
-          if (ticket.qualityScorePercent !== null && ticket.qualityScorePercent !== undefined) {
-            agentGroups[agentId].stats.totalScore += ticket.qualityScorePercent;
-            agentGroups[agentId].stats.scoredCount++;
+            if (ticket.qualityScorePercent !== null && ticket.qualityScorePercent !== undefined) {
+              agentGroups[agentId].stats.totalScore += ticket.qualityScorePercent;
+              agentGroups[agentId].stats.scoredCount++;
+            }
           }
         }
       });

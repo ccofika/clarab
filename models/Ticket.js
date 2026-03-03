@@ -47,6 +47,10 @@ const ticketSchema = new mongoose.Schema({
   gradedDate: {
     type: Date
   },
+  isNote: {
+    type: Boolean,
+    default: false
+  },
   isArchived: {
     type: Boolean,
     default: false
@@ -173,6 +177,7 @@ ticketSchema.index({ agent: 1, status: 1 });
 ticketSchema.index({ agent: 1, isArchived: 1 });
 ticketSchema.index({ createdBy: 1, isArchived: 1 }); // For user-specific ticket queries
 ticketSchema.index({ createdBy: 1, agent: 1, isArchived: 1 }); // For user-agent-archived queries
+ticketSchema.index({ isNote: 1 });
 ticketSchema.index({ categories: 1 });
 ticketSchema.index({ priority: 1 });
 ticketSchema.index({ tags: 1 });
