@@ -98,9 +98,9 @@ app.use(cors(corsOptions));
 // Slack webhook endpoints need raw body for signature verification
 app.use('/api/slack/events', express.raw({ type: 'application/json' }));
 
-// KYC Stats Slack Events - PAUSED (not in use)
-// const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
-// app.post('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }), handleKYCStatsSlackEvents);
+// KYC Stats Slack Events
+const { handleSlackEvents: handleKYCStatsSlackEvents } = require('./controllers/kycAgentStatsController');
+app.post('/api/kyc-stats/slack-events', express.raw({ type: 'application/json' }), handleKYCStatsSlackEvents);
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' })); // Limit request body size
@@ -194,7 +194,7 @@ const reportRoutes = require('./routes/reportRoutes');
 // const chatRoutes = require('./routes/chatRoutes'); // PAUSED
 const activityRoutes = require('./routes/activityRoutes');
 const sectionRoutes = require('./routes/sectionRoutes');
-// const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes'); // PAUSED
+const kycAgentStatsRoutes = require('./routes/kycAgentStatsRoutes');
 const pushRoutes = require('./routes/pushRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const issueRoutes = require('./routes/issueRoutes');
@@ -205,7 +205,9 @@ const rulesRoutes = require('./routes/rulesRoutes');
 const knowledgeBaseRoutes = require('./routes/knowledgeBaseRoutes');
 const kbExtendedRoutes = require('./routes/kbExtendedRoutes');
 const tlRoutes = require('./routes/tlRoutes');
+const downtimeRoutes = require('./routes/downtimeRoutes');
 
+app.use('/api/downtime', downtimeRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/workspaces', workspaceRoutes);
 app.use('/api/canvas', canvasRoutes);
@@ -224,7 +226,7 @@ app.use('/api/reports', reportRoutes); // Statistics/Reports system
 // app.use('/api/chat', chatRoutes); // Chat endpoints - PAUSED
 app.use('/api/activities', activityRoutes); // Activity/Mentions tracking
 app.use('/api/sections', sectionRoutes); // Channel sections/organization
-// app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats - PAUSED
+app.use('/api/kyc-stats', kycAgentStatsRoutes); // KYC Agent Stats
 app.use('/api/push', pushRoutes); // Push notifications
 app.use('/api/categories', categoryRoutes); // Category management for WorkspaceNavigation
 app.use('/api/issues', issueRoutes); // Active Issues tracking
