@@ -943,7 +943,7 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
     }
 
     const response = await fetch(
-      `https://api.intercom.io/conversations/${conversationId}?display_as=plaintext`,
+      `https://api.intercom.io/conversations/${conversationId}`,
       {
         headers: {
           'Authorization': `Bearer ${token}`,
@@ -1005,15 +1005,50 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
       return null;
     };
 
+    // Parse HTML body into ordered content blocks: { type: 'text'|'image', content/url }
+    const parseHtmlBody = (html) => {
+      if (!html) return [];
+      const blocks = [];
+      // Split by <img> tags, keeping the tags
+      const parts = html.split(/(<img[^>]*>)/gi);
+      for (const part of parts) {
+        const imgMatch = part.match(/<img[^>]+src=["']([^"']+)["'][^>]*>/i);
+        if (imgMatch) {
+          blocks.push({ type: 'image', url: imgMatch[1] });
+        } else {
+          // Strip HTML tags, decode entities, normalize whitespace
+          let text = part
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
+            .replace(/<\/div>\s*<div[^>]*>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&amp;/g, '&')
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"')
+            .replace(/&#39;/g, "'")
+            .replace(/&nbsp;/g, ' ')
+            .replace(/[\u200B\u200C\u200D\uFEFF\u00AD]/g, ''); // zero-width & invisible chars
+          if (text.trim()) {
+            blocks.push({ type: 'text', content: text });
+          }
+        }
+      }
+      return blocks;
+    };
+
     // Build messages array from source + conversation_parts
     const messages = [];
 
     // Add source (initial message)
     if (conversation.source) {
+      const srcBody = conversation.source.body || '';
+      const srcBlocks = parseHtmlBody(srcBody);
       messages.push({
         id: conversation.source.id || 'source',
         type: 'message',
-        body: conversation.source.body || '',
+        body: srcBlocks.filter(b => b.type === 'text').map(b => b.content).join('\n'),
+        contentBlocks: srcBlocks,
         authorType: conversation.source.author?.type || 'user',
         authorName: conversation.source.author?.name || 'Unknown',
         authorEmail: conversation.source.author?.email || '',
@@ -1026,10 +1061,13 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
     // Add conversation parts
     if (conversation.conversation_parts?.conversation_parts) {
       for (const part of conversation.conversation_parts.conversation_parts) {
+        const partBody = part.body || '';
+        const partBlocks = parseHtmlBody(partBody);
         messages.push({
           id: part.id,
           type: part.part_type || 'comment',
-          body: part.body || '',
+          body: partBlocks.filter(b => b.type === 'text').map(b => b.content).join('\n'),
+          contentBlocks: partBlocks,
           authorType: part.author?.type || 'unknown',
           authorName: part.author?.name || 'System',
           authorEmail: part.author?.email || '',
@@ -1040,10 +1078,19 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
       }
     }
 
+    // Detect if conversation is email-based
+    const sourceType = conversation.source?.delivered_as || conversation.source?.type || '';
+    const isEmail = sourceType === 'customer_initiated'
+      ? (conversation.source?.subject ? true : false)
+      : ['email', 'automated'].includes(sourceType);
+    const subject = conversation.source?.subject || '';
+
     res.json({
       id: conversation.id,
       title: conversation.title || '',
       state: conversation.state,
+      channel: isEmail || subject ? 'email' : 'chat',
+      subject: subject,
       createdAt: conversation.created_at,
       updatedAt: conversation.updated_at,
       messages
