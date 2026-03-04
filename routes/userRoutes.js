@@ -13,7 +13,9 @@ const {
   getRecentWorkspaces,
   searchUsers,
   updateUserPresence,
-  getUserPresence
+  getUserPresence,
+  getSeenUpdates,
+  markUpdateSeen
 } = require('../controllers/userController');
 const { protect } = require('../middleware/auth');
 
@@ -46,6 +48,10 @@ router.post('/recent/workspace/:workspaceId', protect, trackRecentWorkspace);
 
 // Get recent workspaces
 router.get('/recent/workspaces', protect, getRecentWorkspaces);
+
+// Feature update seen tracking (per-account)
+router.get('/seen-updates', protect, getSeenUpdates);
+router.post('/seen-updates', protect, markUpdateSeen);
 
 // Search users
 router.get('/search', protect, searchUsers);

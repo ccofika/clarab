@@ -177,6 +177,17 @@ const {
 const { analyzeAllAgents } = require('../scripts/analyzeAgentIssues');
 
 const {
+  getReportTemplates,
+  createReportTemplate,
+  updateReportTemplate,
+  deleteReportTemplate,
+  getIntercomReferenceData,
+  countReport,
+  executeReport,
+  getConversationMeta
+} = require('../controllers/intercomReportController');
+
+const {
   // Statistics controllers
   getStatisticCards,
   getStatisticCardsForUser,
@@ -855,5 +866,205 @@ router.get('/migrate-v2-scorecard', protect, async (req, res) => {
   }
 });
 // ============ END TEMPORARY MIGRATION ENDPOINT ============
+
+// ============================================
+// INTERCOM CONVERSATION ROUTE
+// ============================================
+
+// Cache admins list (refreshes every 30 min)
+let intercomAdminsCache = { data: null, fetchedAt: 0 };
+
+async function getIntercomAdmins(token) {
+  const now = Date.now();
+  if (intercomAdminsCache.data && now - intercomAdminsCache.fetchedAt < 30 * 60 * 1000) {
+    return intercomAdminsCache.data;
+  }
+  try {
+    const resp = await fetch('https://api.intercom.io/admins', {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Intercom-Version': '2.11'
+      }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const map = {};
+      for (const admin of (data.admins || [])) {
+        map[admin.id] = admin.avatar?.image_url || null;
+      }
+      intercomAdminsCache = { data: map, fetchedAt: now };
+      return map;
+    }
+  } catch (e) {
+    console.error('Failed to fetch Intercom admins:', e.message);
+  }
+  return intercomAdminsCache.data || {};
+}
+
+// Cache contact avatars
+const contactAvatarCache = new Map();
+
+async function getContactAvatar(contactId, token) {
+  if (contactAvatarCache.has(contactId)) return contactAvatarCache.get(contactId);
+  try {
+    const resp = await fetch(`https://api.intercom.io/contacts/${contactId}`, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'Intercom-Version': '2.11'
+      }
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      const avatar = data.avatar?.image_url || data.avatar || null;
+      contactAvatarCache.set(contactId, avatar);
+      // Limit cache
+      if (contactAvatarCache.size > 200) {
+        const firstKey = contactAvatarCache.keys().next().value;
+        contactAvatarCache.delete(firstKey);
+      }
+      return avatar;
+    }
+  } catch (e) {
+    console.error('Failed to fetch contact avatar:', e.message);
+  }
+  contactAvatarCache.set(contactId, null);
+  return null;
+}
+
+router.get('/intercom-conversation/:conversationId', async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const token = process.env.INTERCOM_API_TOKEN;
+
+    if (!token) {
+      return res.status(500).json({ error: 'Intercom API token not configured' });
+    }
+
+    const response = await fetch(
+      `https://api.intercom.io/conversations/${conversationId}?display_as=plaintext`,
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Intercom-Version': '2.11'
+        }
+      }
+    );
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.status(404).json({ error: 'Conversation not found' });
+      }
+      const errorText = await response.text();
+      console.error(`Intercom API error ${response.status}:`, errorText);
+      return res.status(response.status).json({ error: 'Failed to fetch conversation from Intercom' });
+    }
+
+    const conversation = await response.json();
+
+    // Fetch admin avatars + contact avatars in parallel
+    const adminAvatarsPromise = getIntercomAdmins(token);
+
+    // Collect unique contact IDs from the conversation
+    const contactIds = new Set();
+    if (conversation.source?.author?.type === 'user' && conversation.source.author.id) {
+      contactIds.add(conversation.source.author.id);
+    }
+    if (conversation.contacts?.contacts) {
+      for (const c of conversation.contacts.contacts) {
+        contactIds.add(c.id);
+      }
+    }
+    if (conversation.conversation_parts?.conversation_parts) {
+      for (const part of conversation.conversation_parts.conversation_parts) {
+        if (part.author?.type === 'user' && part.author.id) {
+          contactIds.add(part.author.id);
+        }
+      }
+    }
+
+    const contactAvatarPromises = [...contactIds].map(async (id) => {
+      const avatar = await getContactAvatar(id, token);
+      return [id, avatar];
+    });
+
+    const [adminAvatars, contactAvatarEntries] = await Promise.all([
+      adminAvatarsPromise,
+      Promise.all(contactAvatarPromises)
+    ]);
+
+    const contactAvatars = Object.fromEntries(contactAvatarEntries);
+
+    // Helper to get avatar for an author
+    const getAvatar = (author) => {
+      if (!author?.id) return null;
+      if (author.type === 'admin') return adminAvatars[author.id] || null;
+      if (author.type === 'user') return contactAvatars[author.id] || null;
+      return null;
+    };
+
+    // Build messages array from source + conversation_parts
+    const messages = [];
+
+    // Add source (initial message)
+    if (conversation.source) {
+      messages.push({
+        id: conversation.source.id || 'source',
+        type: 'message',
+        body: conversation.source.body || '',
+        authorType: conversation.source.author?.type || 'user',
+        authorName: conversation.source.author?.name || 'Unknown',
+        authorEmail: conversation.source.author?.email || '',
+        authorAvatar: getAvatar(conversation.source.author),
+        createdAt: conversation.created_at,
+        attachments: conversation.source.attachments || []
+      });
+    }
+
+    // Add conversation parts
+    if (conversation.conversation_parts?.conversation_parts) {
+      for (const part of conversation.conversation_parts.conversation_parts) {
+        messages.push({
+          id: part.id,
+          type: part.part_type || 'comment',
+          body: part.body || '',
+          authorType: part.author?.type || 'unknown',
+          authorName: part.author?.name || 'System',
+          authorEmail: part.author?.email || '',
+          authorAvatar: getAvatar(part.author),
+          createdAt: part.created_at,
+          attachments: part.attachments || []
+        });
+      }
+    }
+
+    res.json({
+      id: conversation.id,
+      title: conversation.title || '',
+      state: conversation.state,
+      createdAt: conversation.created_at,
+      updatedAt: conversation.updated_at,
+      messages
+    });
+  } catch (error) {
+    console.error('Intercom conversation fetch error:', error);
+    res.status(500).json({ error: 'Internal server error fetching conversation' });
+  }
+});
+
+// ============================================
+// INTERCOM REPORT ROUTES
+// ============================================
+
+router.get('/intercom-report/reference-data', getIntercomReferenceData);
+router.get('/intercom-report/templates', getReportTemplates);
+router.post('/intercom-report/templates', createReportTemplate);
+router.put('/intercom-report/templates/:id', updateReportTemplate);
+router.delete('/intercom-report/templates/:id', deleteReportTemplate);
+router.post('/intercom-report/count', countReport);
+router.post('/intercom-report/execute', executeReport);
+router.get('/intercom-report/conversation/:id', getConversationMeta);
 
 module.exports = router;

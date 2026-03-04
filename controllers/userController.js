@@ -57,6 +57,42 @@ exports.getUserStatistics = async (req, res) => {
   }
 };
 
+// Get seen update IDs for the logged-in user
+exports.getSeenUpdates = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('seenUpdates');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json({ seenUpdates: user.seenUpdates || [] });
+  } catch (error) {
+    console.error('Error getting seen updates:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// Mark an update as seen for the logged-in user
+exports.markUpdateSeen = async (req, res) => {
+  try {
+    const { updateId } = req.body;
+    if (!updateId) {
+      return res.status(400).json({ message: 'updateId is required' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { $addToSet: { seenUpdates: updateId } },
+      { new: true }
+    ).select('seenUpdates');
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+    res.json({ seenUpdates: user.seenUpdates });
+  } catch (error) {
+    console.error('Error marking update seen:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // Reset tutorial (set tutorialCompleted to false)
 exports.resetTutorial = async (req, res) => {
   try {

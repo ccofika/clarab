@@ -144,6 +144,10 @@ const userSchema = new mongoose.Schema({
       default: Date.now
     }
   }],
+  // Seen feature update IDs (persisted per-account, not localStorage)
+  seenUpdates: [{
+    type: String
+  }],
   // Account lockout fields
   loginAttempts: {
     type: Number,
