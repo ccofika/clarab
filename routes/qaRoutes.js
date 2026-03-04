@@ -797,6 +797,126 @@ router.get('/zenmove/extraction-counts', getExtractionCounts);
 router.get('/zenmove/settings', getZenMoveSettings);
 router.put('/zenmove/settings', allAgentsAdminAuth, updateZenMoveSettings);
 
+// ============================================
+// ACP ROUTES (Cloudflare Access Proxy)
+// ============================================
+
+const AcpToken = require('../models/AcpToken');
+const { encrypt: acpEncrypt, decrypt: acpDecrypt } = require('../utils/acpEncryption');
+
+// Save ACP token (encrypted)
+router.post('/acp/token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ message: 'Token is required' });
+    }
+
+    // Parse JWT exp claim to determine expiry
+    let expiresAt;
+    try {
+      const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64').toString());
+      expiresAt = new Date(payload.exp * 1000);
+    } catch (e) {
+      // Fallback: 24 hours from now
+      expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    }
+
+    const { encrypted, iv, authTag } = acpEncrypt(token);
+
+    await AcpToken.findOneAndUpdate(
+      { user: req.user._id },
+      { encryptedToken: encrypted, iv, authTag, expiresAt },
+      { upsert: true, new: true }
+    );
+
+    res.json({ success: true, expiresAt });
+  } catch (error) {
+    console.error('Error saving ACP token:', error);
+    res.status(500).json({ message: 'Failed to save ACP token' });
+  }
+});
+
+// Get ACP connection status
+router.get('/acp/status', async (req, res) => {
+  try {
+    const acpToken = await AcpToken.findOne({ user: req.user._id });
+
+    if (!acpToken) {
+      return res.json({ connected: false, expired: false });
+    }
+
+    const expired = acpToken.expiresAt < new Date();
+    res.json({ connected: !expired, expired, expiresAt: acpToken.expiresAt });
+  } catch (error) {
+    console.error('Error checking ACP status:', error);
+    res.status(500).json({ message: 'Failed to check ACP status' });
+  }
+});
+
+// Proxy GraphQL query to ACP
+router.post('/acp/query', async (req, res) => {
+  try {
+    const acpToken = await AcpToken.findOne({ user: req.user._id });
+    if (!acpToken) {
+      return res.status(401).json({ message: 'ACP not connected. Please connect first.' });
+    }
+
+    if (acpToken.expiresAt < new Date()) {
+      return res.status(401).json({ message: 'ACP token expired. Please reconnect.' });
+    }
+
+    let cfToken;
+    try {
+      cfToken = acpDecrypt({
+        encrypted: acpToken.encryptedToken,
+        iv: acpToken.iv,
+        authTag: acpToken.authTag
+      });
+    } catch (e) {
+      return res.status(500).json({ message: 'Failed to decrypt ACP token' });
+    }
+
+    const { query, variables } = req.body;
+    if (!query) {
+      return res.status(400).json({ message: 'GraphQL query is required' });
+    }
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Cookie': `CF_Authorization=${cfToken}`
+    };
+
+    // Add Stake API token if configured
+    if (process.env.STAKE_API_TOKEN) {
+      headers['x-access-token'] = process.env.STAKE_API_TOKEN;
+    }
+
+    const acpResponse = await fetch('https://buyconcorde.club/_api/graphql', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ query, variables })
+    });
+
+    if (!acpResponse.ok) {
+      const errorText = await acpResponse.text();
+      console.error(`ACP GraphQL error ${acpResponse.status}:`, errorText);
+
+      if (acpResponse.status === 403 || acpResponse.status === 401) {
+        return res.status(401).json({ message: 'ACP token rejected. Please reconnect.' });
+      }
+
+      return res.status(acpResponse.status).json({ message: 'ACP query failed' });
+    }
+
+    const data = await acpResponse.json();
+    res.json(data);
+  } catch (error) {
+    console.error('ACP proxy error:', error);
+    res.status(500).json({ message: 'Failed to proxy ACP query' });
+  }
+});
+
 // ============ TEMPORARY MIGRATION ENDPOINT - DELETE AFTER USE ============
 const Ticket = require('../models/Ticket');
 
@@ -871,70 +991,9 @@ router.get('/migrate-v2-scorecard', protect, async (req, res) => {
 // INTERCOM CONVERSATION ROUTE
 // ============================================
 
-// Cache admins list (refreshes every 30 min)
-let intercomAdminsCache = { data: null, fetchedAt: 0 };
-
-async function getIntercomAdmins(token) {
-  const now = Date.now();
-  if (intercomAdminsCache.data && now - intercomAdminsCache.fetchedAt < 30 * 60 * 1000) {
-    return intercomAdminsCache.data;
-  }
-  try {
-    const resp = await fetch('https://api.intercom.io/admins', {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Intercom-Version': '2.11'
-      }
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      const map = {};
-      for (const admin of (data.admins || [])) {
-        map[admin.id] = admin.avatar?.image_url || null;
-      }
-      intercomAdminsCache = { data: map, fetchedAt: now };
-      return map;
-    }
-  } catch (e) {
-    console.error('Failed to fetch Intercom admins:', e.message);
-  }
-  return intercomAdminsCache.data || {};
-}
-
-// Cache contact avatars
-const contactAvatarCache = new Map();
-
-async function getContactAvatar(contactId, token) {
-  if (contactAvatarCache.has(contactId)) return contactAvatarCache.get(contactId);
-  try {
-    const resp = await fetch(`https://api.intercom.io/contacts/${contactId}`, {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'Intercom-Version': '2.11'
-      }
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      const avatar = data.avatar?.image_url || data.avatar || null;
-      contactAvatarCache.set(contactId, avatar);
-      // Limit cache
-      if (contactAvatarCache.size > 200) {
-        const firstKey = contactAvatarCache.keys().next().value;
-        contactAvatarCache.delete(firstKey);
-      }
-      return avatar;
-    }
-  } catch (e) {
-    console.error('Failed to fetch contact avatar:', e.message);
-  }
-  contactAvatarCache.set(contactId, null);
-  return null;
-}
-
 router.get('/intercom-conversation/:conversationId', async (req, res) => {
   try {
+    const t0 = Date.now();
     const { conversationId } = req.params;
     const token = process.env.INTERCOM_API_TOKEN;
 
@@ -963,47 +1022,6 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
     }
 
     const conversation = await response.json();
-
-    // Fetch admin avatars + contact avatars in parallel
-    const adminAvatarsPromise = getIntercomAdmins(token);
-
-    // Collect unique contact IDs from the conversation
-    const contactIds = new Set();
-    if (conversation.source?.author?.type === 'user' && conversation.source.author.id) {
-      contactIds.add(conversation.source.author.id);
-    }
-    if (conversation.contacts?.contacts) {
-      for (const c of conversation.contacts.contacts) {
-        contactIds.add(c.id);
-      }
-    }
-    if (conversation.conversation_parts?.conversation_parts) {
-      for (const part of conversation.conversation_parts.conversation_parts) {
-        if (part.author?.type === 'user' && part.author.id) {
-          contactIds.add(part.author.id);
-        }
-      }
-    }
-
-    const contactAvatarPromises = [...contactIds].map(async (id) => {
-      const avatar = await getContactAvatar(id, token);
-      return [id, avatar];
-    });
-
-    const [adminAvatars, contactAvatarEntries] = await Promise.all([
-      adminAvatarsPromise,
-      Promise.all(contactAvatarPromises)
-    ]);
-
-    const contactAvatars = Object.fromEntries(contactAvatarEntries);
-
-    // Helper to get avatar for an author
-    const getAvatar = (author) => {
-      if (!author?.id) return null;
-      if (author.type === 'admin') return adminAvatars[author.id] || null;
-      if (author.type === 'user') return contactAvatars[author.id] || null;
-      return null;
-    };
 
     // Parse HTML body into ordered content blocks: { type: 'text'|'image', content/url }
     const parseHtmlBody = (html) => {
@@ -1052,7 +1070,7 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
         authorType: conversation.source.author?.type || 'user',
         authorName: conversation.source.author?.name || 'Unknown',
         authorEmail: conversation.source.author?.email || '',
-        authorAvatar: getAvatar(conversation.source.author),
+        authorAvatar: null,
         createdAt: conversation.created_at,
         attachments: conversation.source.attachments || []
       });
@@ -1071,7 +1089,7 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
           authorType: part.author?.type || 'unknown',
           authorName: part.author?.name || 'System',
           authorEmail: part.author?.email || '',
-          authorAvatar: getAvatar(part.author),
+          authorAvatar: null,
           createdAt: part.created_at,
           attachments: part.attachments || []
         });
@@ -1085,6 +1103,7 @@ router.get('/intercom-conversation/:conversationId', async (req, res) => {
       : ['email', 'automated'].includes(sourceType);
     const subject = conversation.source?.subject || '';
 
+    console.log(`[PERF] intercom-conversation(${conversationId}): total=${Date.now() - t0}ms, ${messages.length} messages`);
     res.json({
       id: conversation.id,
       title: conversation.title || '',

@@ -300,35 +300,96 @@ function hasPostFilters(filters) {
   return (filters.topics?.length > 0) || (filters.kycCountries?.length > 0);
 }
 
-// @desc    Get total count for a report query (fast — fetches 0 conversations)
+// @desc    Get total count for a report query
 // @route   POST /api/qa/intercom-report/count
 // @access  Private
 exports.countReport = async (req, res) => {
   try {
+    const t0 = Date.now();
     const { filters } = req.body;
     if (!filters) return res.status(400).json({ message: 'Filters are required' });
 
     const query = buildIntercomQuery(filters);
-    const searchBody = { query, pagination: { per_page: 1 } };
+    const needsPostFilter = hasPostFilters(filters);
 
-    const searchResp = await fetchWithRetry(`${INTERCOM_API_BASE}/conversations/search`, {
-      method: 'POST',
-      headers: getIntercomHeaders(),
-      body: JSON.stringify(searchBody)
-    });
-
-    if (!searchResp.ok) {
-      const errText = await searchResp.text();
-      logger.error(`Intercom count error ${searchResp.status}:`, errText);
-      return res.status(searchResp.status).json({ message: 'Intercom count failed' });
+    // Fast path: no post-filters, just ask Intercom for count
+    if (!needsPostFilter) {
+      const searchBody = { query, pagination: { per_page: 1 } };
+      const searchResp = await fetchWithRetry(`${INTERCOM_API_BASE}/conversations/search`, {
+        method: 'POST',
+        headers: getIntercomHeaders(),
+        body: JSON.stringify(searchBody)
+      });
+      if (!searchResp.ok) {
+        const errText = await searchResp.text();
+        logger.error(`Intercom count error ${searchResp.status}:`, errText);
+        return res.status(searchResp.status).json({ message: 'Intercom count failed' });
+      }
+      const data = await searchResp.json();
+      logger.info(`[PERF] countReport (fast): ${Date.now() - t0}ms, total=${data.total_count}`);
+      return res.json({ totalCount: data.total_count || 0, hasPostFilters: false });
     }
 
-    const data = await searchResp.json();
-    // total_count is at top level of Intercom search response
-    res.json({
-      totalCount: data.total_count || 0,
-      hasPostFilters: hasPostFilters(filters)
-    });
+    // Full scan: post-filters active — scan all pages and apply filters
+    const headers = getIntercomHeaders();
+    const hasTopicFilter = filters.topics?.length > 0;
+    const hasKycFilter = filters.kycCountries?.length > 0;
+    const topicSet = hasTopicFilter ? new Set(filters.topics.map(t => t.toLowerCase())) : null;
+    const countrySet = hasKycFilter ? new Set(filters.kycCountries.map(c => c.toLowerCase())) : null;
+
+    let totalFiltered = 0;
+    let cursor = null;
+    const MAX_PAGES = 20;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const searchBody = {
+        query,
+        pagination: { per_page: 150, ...(cursor ? { starting_after: cursor } : {}) }
+      };
+      const searchResp = await fetchWithRetry(`${INTERCOM_API_BASE}/conversations/search`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(searchBody)
+      });
+      if (!searchResp.ok) break;
+
+      const searchData = await searchResp.json();
+      let conversations = searchData.conversations || [];
+      if (conversations.length === 0) break;
+
+      // Topic filter (instant — in-memory)
+      if (hasTopicFilter) {
+        conversations = conversations.filter(conv => {
+          const convTopics = (conv.topics?.topics || []).map(t => (t.name || t).toLowerCase());
+          if (filters.topicOperator === 'is_not') {
+            return !convTopics.some(t => topicSet.has(t));
+          }
+          return convTopics.some(t => topicSet.has(t));
+        });
+      }
+
+      // KYC filter (parallel contact fetches)
+      if (hasKycFilter && conversations.length > 0) {
+        const results = await Promise.all(conversations.map(async (conv) => {
+          const contactId = conv.contacts?.contacts?.[0]?.id;
+          if (!contactId) return true; // no contact = include
+          const kycCountry = await fetchContactAttribute(contactId, 'kyc_country');
+          const countryLower = (kycCountry || '').toLowerCase();
+          if (filters.kycCountryOperator === 'is_not') {
+            return !countrySet.has(countryLower);
+          }
+          return countrySet.has(countryLower);
+        }));
+        conversations = conversations.filter((_, i) => results[i]);
+      }
+
+      totalFiltered += conversations.length;
+      if (!searchData.pages?.next) break;
+      cursor = searchData.pages.next.starting_after;
+    }
+
+    logger.info(`[PERF] countReport (full scan): ${Date.now() - t0}ms, filtered total=${totalFiltered}`);
+    res.json({ totalCount: totalFiltered, hasPostFilters: true });
   } catch (error) {
     logger.error('Error counting report:', error);
     res.status(500).json({ message: 'Failed to count' });
@@ -340,6 +401,7 @@ exports.countReport = async (req, res) => {
 // @access  Private
 exports.executeReport = async (req, res) => {
   try {
+    const t0 = Date.now();
     const { filters, cursor } = req.body;
     if (!filters) {
       return res.status(400).json({ message: 'Filters are required' });
@@ -356,6 +418,7 @@ exports.executeReport = async (req, res) => {
       }
     };
 
+    const t1 = Date.now();
     const searchResp = await fetchWithRetry(`${INTERCOM_API_BASE}/conversations/search`, {
       method: 'POST',
       headers,
@@ -370,11 +433,14 @@ exports.executeReport = async (req, res) => {
     }
 
     const searchData = await searchResp.json();
+    const t2 = Date.now();
     let conversations = searchData.conversations || [];
+    logger.info(`[PERF] executeReport: Intercom search=${t2 - t1}ms, returned ${conversations.length} convs`);
 
     // Post-filter: Topics
     const hasTopicFilter = filters.topics?.length > 0;
     if (hasTopicFilter) {
+      const beforeCount = conversations.length;
       const topicSet = new Set(filters.topics.map(t => t.toLowerCase()));
       conversations = conversations.filter(conv => {
         const convTopics = (conv.topics?.topics || []).map(t => (t.name || t).toLowerCase());
@@ -384,18 +450,21 @@ exports.executeReport = async (req, res) => {
           return convTopics.some(t => topicSet.has(t));
         }
       });
+      logger.info(`[PERF] executeReport: topic filter ${beforeCount} -> ${conversations.length}, took ${Date.now() - t2}ms`);
     }
 
     // Post-filter: KYC Country (requires fetching contact data)
     const hasKycFilter = filters.kycCountries?.length > 0;
     if (hasKycFilter) {
+      const t3 = Date.now();
+      const beforeCount = conversations.length;
       const countrySet = new Set(filters.kycCountries.map(c => c.toLowerCase()));
       const filtered = [];
 
       for (const conv of conversations) {
         const contactId = conv.contacts?.contacts?.[0]?.id;
         if (!contactId) {
-          if (filters.kycCountryOperator === 'is_not') filtered.push(conv);
+          filtered.push(conv);
           continue;
         }
 
@@ -409,6 +478,7 @@ exports.executeReport = async (req, res) => {
         }
       }
       conversations = filtered;
+      logger.info(`[PERF] executeReport: KYC filter ${beforeCount} -> ${conversations.length}, took ${Date.now() - t3}ms (${beforeCount} contact fetches)`);
     }
 
     // Map to clean response format
@@ -427,6 +497,7 @@ exports.executeReport = async (req, res) => {
       category: conv.custom_attributes?.['AI Category'] || ''
     }));
 
+    logger.info(`[PERF] executeReport: TOTAL=${Date.now() - t0}ms, final ${results.length} results`);
     res.json({
       conversations: results,
       hasMore: !!(searchData.pages?.next),
@@ -447,12 +518,14 @@ exports.executeReport = async (req, res) => {
 // @access  Private
 exports.getConversationMeta = async (req, res) => {
   try {
+    const t0 = Date.now();
     const { id } = req.params;
     const headers = getIntercomHeaders();
 
     const resp = await fetchWithRetry(`${INTERCOM_API_BASE}/conversations/${id}`, {
       headers
     });
+    const t1 = Date.now();
 
     if (!resp.ok) {
       if (resp.status === 404) return res.status(404).json({ message: 'Conversation not found' });
@@ -467,6 +540,8 @@ exports.getConversationMeta = async (req, res) => {
     if (contactId) {
       kycCountry = await fetchContactAttribute(contactId, 'kyc_country');
     }
+    const t2 = Date.now();
+    logger.info(`[PERF] getConversationMeta(${id}): intercom=${t1 - t0}ms, contact=${t2 - t1}ms, total=${t2 - t0}ms`);
 
     res.json({
       id: conv.id,
