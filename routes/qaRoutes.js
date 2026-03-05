@@ -804,6 +804,15 @@ router.put('/zenmove/settings', allAgentsAdminAuth, updateZenMoveSettings);
 const AcpToken = require('../models/AcpToken');
 const { encrypt: acpEncrypt, decrypt: acpDecrypt } = require('../utils/acpEncryption');
 
+// Get ACP API token for extension-based queries
+router.get('/acp/api-token', (req, res) => {
+  const token = process.env.STAKE_API_TOKEN;
+  if (!token) {
+    return res.status(404).json({ message: 'ACP API token not configured' });
+  }
+  res.json({ token });
+});
+
 // Save ACP token (encrypted)
 router.post('/acp/token', async (req, res) => {
   try {
