@@ -167,6 +167,7 @@ exports.handleSlackEvents = async (req, res) => {
 
 const handleNewMessage = async (event, channelDoc) => {
   try {
+    console.log(`📨 KYC Goals: New message in ${channelDoc.name} (${event.channel}), ts: ${event.ts}`);
     await KYCTicket.findOrCreateFromMessage({
       channelId: channelDoc._id,
       slackChannelId: event.channel,
@@ -185,6 +186,7 @@ const handleClaimReaction = async (event, channelDoc) => {
     await ensureAgentChannel(agent, channelDoc);
 
     await KYCTicket.claimTicket({
+      channelId: channelDoc._id,
       slackChannelId: event.item.channel,
       messageTs: event.item.ts,
       agentId: agent._id,
@@ -204,6 +206,7 @@ const handleResolveReaction = async (event, channelDoc) => {
     await ensureAgentChannel(agent, channelDoc);
 
     await KYCTicket.resolveTicket({
+      channelId: channelDoc._id,
       slackChannelId: event.item.channel,
       messageTs: event.item.ts,
       agentId: agent._id,

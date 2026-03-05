@@ -171,8 +171,25 @@ kycTicketSchema.statics.claimTicket = async function(data) {
   }
 
   if (!ticket) {
-    console.log(`⚠️ KYCTicket.claimTicket: No ticket found for message ${messageTs} in ${slackChannelId}`);
-    return null;
+    // Auto-create ticket if Slack didn't send the message event
+    if (data.channelId) {
+      console.log(`📝 KYCTicket.claimTicket: Auto-creating ticket for message ${messageTs} in ${slackChannelId}`);
+      const msgDate = new Date(parseFloat(messageTs) * 1000);
+      const hour = getBelgradeHour(msgDate);
+      ticket = await this.create({
+        channelId: data.channelId,
+        slackChannelId,
+        slackMessageTs: messageTs,
+        threadTs: messageTs,
+        createdAt: msgDate,
+        status: 'open',
+        shift: getShiftFromHour(hour),
+        activityDate: getBelgradeDateString(msgDate)
+      });
+    } else {
+      console.log(`⚠️ KYCTicket.claimTicket: No ticket found for message ${messageTs} in ${slackChannelId}`);
+      return null;
+    }
   }
 
   // Don't re-claim if already claimed
@@ -208,8 +225,25 @@ kycTicketSchema.statics.resolveTicket = async function(data) {
   }
 
   if (!ticket) {
-    console.log(`⚠️ KYCTicket.resolveTicket: No ticket found for message ${messageTs} in ${slackChannelId}`);
-    return null;
+    // Auto-create ticket if Slack didn't send the message event
+    if (data.channelId) {
+      console.log(`📝 KYCTicket.resolveTicket: Auto-creating ticket for message ${messageTs} in ${slackChannelId}`);
+      const msgDate = new Date(parseFloat(messageTs) * 1000);
+      const hour = getBelgradeHour(msgDate);
+      ticket = await this.create({
+        channelId: data.channelId,
+        slackChannelId,
+        slackMessageTs: messageTs,
+        threadTs: messageTs,
+        createdAt: msgDate,
+        status: 'open',
+        shift: getShiftFromHour(hour),
+        activityDate: getBelgradeDateString(msgDate)
+      });
+    } else {
+      console.log(`⚠️ KYCTicket.resolveTicket: No ticket found for message ${messageTs} in ${slackChannelId}`);
+      return null;
+    }
   }
 
   if (ticket.status === 'resolved') {
