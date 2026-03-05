@@ -112,6 +112,15 @@ const kycTicketSchema = new mongoose.Schema({
     index: true
   },
 
+  // Case type for hybrid channels
+  // "agent_initiated" = KYC agent posted (instant case, no time tracking)
+  // "external_request" = non-KYC person posted (full lifecycle with time tracking)
+  caseType: {
+    type: String,
+    enum: ['agent_initiated', 'external_request'],
+    default: 'external_request'
+  },
+
   // Meta
   shift: {
     type: String,
@@ -140,7 +149,7 @@ kycTicketSchema.statics.getBelgradeHour = getBelgradeHour;
  * Create a new open ticket from a top-level message
  */
 kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
-  const { channelId, slackChannelId, slackMessageTs } = data;
+  const { channelId, slackChannelId, slackMessageTs, caseType } = data;
 
   const existing = await this.findOne({ slackChannelId, slackMessageTs });
   if (existing) return existing;
@@ -148,7 +157,7 @@ kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
   const msgDate = new Date(parseFloat(slackMessageTs) * 1000);
   const hour = getBelgradeHour(msgDate);
 
-  return this.create({
+  const doc = {
     channelId,
     slackChannelId,
     slackMessageTs,
@@ -157,7 +166,10 @@ kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
     status: 'open',
     shift: getShiftFromHour(hour),
     activityDate: getBelgradeDateString(msgDate)
-  });
+  };
+  if (caseType) doc.caseType = caseType;
+
+  return this.create(doc);
 };
 
 /**

@@ -179,6 +179,31 @@ exports.handleSlackEvents = async (req, res) => {
         return res.status(200).send();
       }
 
+      // === HYBRID mode: agent message = instant case, non-agent message = full lifecycle ===
+      if (channelDoc.trackingMode === 'hybrid') {
+        // Top-level message: check if author is KYC agent or external
+        if (event.type === 'message' && !event.thread_ts && !event.bot_id && !event.subtype) {
+          await handleHybridMessage(event, channelDoc);
+        }
+
+        // Reactions still tracked for external_request tickets (full lifecycle)
+        if (event.type === 'reaction_added') {
+          const config = channelDoc.trackingConfig || {};
+          if ((config.claimDetection?.emojis || []).includes(event.reaction)) {
+            await handleClaimReaction(event, channelDoc);
+          } else if ((config.resolveDetection?.emojis || []).includes(event.reaction)) {
+            await handleResolveReaction(event, channelDoc);
+          }
+        }
+
+        // Thread replies still tracked for external_request tickets
+        if (event.type === 'message' && event.thread_ts && !event.bot_id && event.subtype !== 'bot_message') {
+          await handleThreadReply(event, channelDoc);
+        }
+
+        return res.status(200).send();
+      }
+
       // === FULL mode: ⏳/✅ lifecycle ===
       // Route reaction events
       if (event.type === 'reaction_added') {
@@ -269,6 +294,57 @@ const handleNewMessage = async (event, channelDoc) => {
     });
   } catch (error) {
     console.error('❌ Error handling new message:', error);
+  }
+};
+
+/**
+ * hybrid mode: if message author is a KYC agent → instant case, otherwise → open ticket for full tracking
+ */
+const handleHybridMessage = async (event, channelDoc) => {
+  try {
+    const agent = await resolveAgent(event.user);
+
+    if (agent) {
+      // KYC agent posted → instant resolved case (like message_count)
+      await ensureAgentChannel(agent, channelDoc);
+      const msgDate = new Date(parseFloat(event.ts) * 1000);
+
+      console.log(`📨 KYC Goals [hybrid/agent]: ${agent.name} sent message in ${channelDoc.name} → instant case`);
+
+      await KYCTicket.create({
+        channelId: channelDoc._id,
+        slackChannelId: event.channel,
+        slackMessageTs: event.ts,
+        threadTs: event.ts,
+        createdAt: msgDate,
+        claimedAt: msgDate,
+        resolvedAt: msgDate,
+        claimedByAgentId: agent._id,
+        claimedBySlackId: event.user,
+        resolvedByAgentId: agent._id,
+        resolvedBySlackId: event.user,
+        status: 'resolved',
+        caseType: 'agent_initiated',
+        timeToClaimSeconds: 0,
+        responseTimeSeconds: 0,
+        totalHandlingTimeSeconds: 0,
+        shift: KYCTicket.getShiftFromHour(KYCTicket.getBelgradeHour(msgDate)),
+        activityDate: KYCTicket.getBelgradeDateString(msgDate)
+      });
+    } else {
+      // Non-KYC person posted → open ticket for full lifecycle tracking
+      console.log(`📨 KYC Goals [hybrid/external]: Non-agent message in ${channelDoc.name} (${event.channel}), ts: ${event.ts}`);
+
+      await KYCTicket.findOrCreateFromMessage({
+        channelId: channelDoc._id,
+        slackChannelId: event.channel,
+        slackMessageTs: event.ts,
+        caseType: 'external_request'
+      });
+    }
+  } catch (error) {
+    if (error.code === 11000) return;
+    console.error('Error handling hybrid message:', error);
   }
 };
 
@@ -768,6 +844,7 @@ exports.getChannels = async (req, res) => {
         name: ch.name,
         slackChannelId: ch.slackChannelId,
         trackingMode: ch.trackingMode || 'full',
+        botInstalled: ch.botInstalled !== false,
         totalCases: stat.totalCases || 0,
         resolvedCases: stat.resolvedCases || 0,
         backlog: stat.openCases || 0,
@@ -991,22 +1068,31 @@ exports.seed = async (req, res) => {
     // Seed channels
     const channelSeeds = [
       // Stake.com (6 channels)
-      { name: 'mebit-kyc', slackChannelId: 'C03CNGD0L9W', organization: 'Stake.com' },
-      { name: 'fraud-abuse-kyc', slackChannelId: 'C058YDDMWAD', organization: 'Stake.com' },
-      { name: 'kyc-payments', slackChannelId: 'C07JQN3QSRZ', organization: 'Stake.com' },
-      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Stake.com', trackingMode: 'message_count' },
-      { name: 'sportsbook-kyc_team', slackChannelId: 'C03UNB9F5BP', organization: 'Stake.com' },
-      { name: 'vip-hosts-kyc', slackChannelId: 'C069WRZHMKP', organization: 'Stake.com' },
+      { name: 'mebit-kyc', slackChannelId: 'C03CNGD0L9W', organization: 'Stake.com', botInstalled: true },
+      { name: 'fraud-abuse-kyc', slackChannelId: 'C058YDDMWAD', organization: 'Stake.com', botInstalled: true },
+      { name: 'kyc-payments', slackChannelId: 'C07JQN3QSRZ', organization: 'Stake.com', botInstalled: true, trackingMode: 'hybrid' },
+      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Stake.com', botInstalled: true, trackingMode: 'hybrid' },
+      {
+        name: 'sportsbook-kyc_team', slackChannelId: 'C03UNB9F5BP', organization: 'Stake.com', botInstalled: false,
+        trackingConfig: {
+          claimDetection: { emojis: ['hourglass_flowing_sand', 'hourglass', 'timer_clock'] },
+          resolveDetection: {
+            emojis: ['white_check_mark', 'heavy_check_mark', 'x', 'negative_squared_cross_mark', 'confirm', 'reject'],
+            threadReplyFallback: true
+          }
+        }
+      },
+      { name: 'vip-hosts-kyc', slackChannelId: 'C069WRZHMKP', organization: 'Stake.com', botInstalled: false },
       // Stake.us (2 channels)
-      { name: 'po-box-stake-us', slackChannelId: 'C07AP7TBLD9', organization: 'Stake.us' },
-      { name: 'stake-us-veriff-pd', slackChannelId: 'C07AP8VT2RG', organization: 'Stake.us' },
+      { name: 'po-box-stake-us', slackChannelId: 'C07AP7TBLD9', organization: 'Stake.us', botInstalled: true },
+      { name: 'stake-us-veriff-pd', slackChannelId: 'C07AP8VT2RG', organization: 'Stake.us', botInstalled: true },
       // Stake Brazil (1 channel)
-      { name: 'br-kyc-support', slackChannelId: 'C086ZK47KNE', organization: 'Stake Brazil' },
+      { name: 'br-kyc-support', slackChannelId: 'C086ZK47KNE', organization: 'Stake Brazil', botInstalled: false },
       // Stake Denmark (2 channels)
-      { name: 'dk-kyc-compliance', slackChannelId: 'C09RQM4T11B', organization: 'Stake Denmark' },
-      { name: 'dk-kyc-support', slackChannelId: 'C09M61ADX97', organization: 'Stake Denmark' },
+      { name: 'dk-kyc-compliance', slackChannelId: 'C09RQM4T11B', organization: 'Stake Denmark', botInstalled: true },
+      { name: 'dk-kyc-support', slackChannelId: 'C09M61ADX97', organization: 'Stake Denmark', botInstalled: false },
       // Stake Italy (1 channel)
-      { name: 'italy-support-kyc', slackChannelId: 'C0909QR6W21', organization: 'Stake Italy' }
+      { name: 'italy-support-kyc', slackChannelId: 'C0909QR6W21', organization: 'Stake Italy', botInstalled: true }
     ];
 
     const channelResults = [];

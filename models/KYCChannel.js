@@ -21,10 +21,17 @@ const kycChannelSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
-  // "full" = ⏳/✅ lifecycle, "message_count" = each agent message = 1 case (no reactions)
+  // Whether the Slack bot has been added to this channel (can receive events)
+  botInstalled: {
+    type: Boolean,
+    default: false
+  },
+  // "full" = ⏳/✅ lifecycle for ALL messages
+  // "message_count" = each agent message = 1 case (no reactions)
+  // "hybrid" = agent message = instant case, non-agent message = full ⏳/✅ lifecycle
   trackingMode: {
     type: String,
-    enum: ['full', 'message_count'],
+    enum: ['full', 'message_count', 'hybrid'],
     default: 'full'
   },
   trackingConfig: {
