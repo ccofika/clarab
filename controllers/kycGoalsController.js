@@ -87,6 +87,47 @@ const ensureAgentChannel = async (agent, channelDoc) => {
  * Handle Slack Events for KYC Goals (multi-channel)
  * POST /api/kyc-stats/slack-events
  */
+/**
+ * Fetch a message's thread_ts from Slack to find the parent message
+ */
+const getMessageThreadTs = async (channel, messageTs) => {
+  const client = getSlackClient();
+  if (!client) return null;
+
+  try {
+    const result = await client.conversations.replies({
+      channel,
+      ts: messageTs,
+      limit: 1,
+      inclusive: true
+    });
+    if (result.ok && result.messages?.length > 0) {
+      const msg = result.messages[0];
+      // If the message has thread_ts different from its own ts, it's a thread reply
+      if (msg.thread_ts && msg.thread_ts !== msg.ts) {
+        return msg.thread_ts;
+      }
+    }
+  } catch (e) {
+    // Fallback: try conversations.history for top-level messages
+    try {
+      const result = await client.conversations.history({
+        channel,
+        latest: messageTs,
+        oldest: messageTs,
+        inclusive: true,
+        limit: 1
+      });
+      if (result.ok && result.messages?.length > 0) {
+        return result.messages[0].thread_ts || null;
+      }
+    } catch (e2) {
+      console.error('Error fetching message thread_ts:', e2.message);
+    }
+  }
+  return null;
+};
+
 exports.handleSlackEvents = async (req, res) => {
   try {
     let rawBody, payload;
@@ -185,10 +226,29 @@ const handleClaimReaction = async (event, channelDoc) => {
 
     await ensureAgentChannel(agent, channelDoc);
 
+    const messageTs = event.item.ts;
+    const slackChannelId = event.item.channel;
+
+    // First try direct lookup by the reacted message ts
+    let ticket = await KYCTicket.findOne({ slackChannelId, slackMessageTs: messageTs });
+
+    // If not found, check if the reaction was on a thread reply → find parent ticket
+    if (!ticket) {
+      const parentTs = await getMessageThreadTs(slackChannelId, messageTs);
+      if (parentTs && parentTs !== messageTs) {
+        ticket = await KYCTicket.findOne({ slackChannelId, slackMessageTs: parentTs });
+      }
+    }
+
+    // If still no ticket, auto-create one (the reacted message IS the case)
+    if (!ticket) {
+      console.log(`📝 KYC Goals: Auto-creating ticket for claim on ${messageTs} in ${channelDoc.name}`);
+    }
+
     await KYCTicket.claimTicket({
       channelId: channelDoc._id,
-      slackChannelId: event.item.channel,
-      messageTs: event.item.ts,
+      slackChannelId,
+      messageTs: ticket ? ticket.slackMessageTs : messageTs,
       agentId: agent._id,
       agentSlackId: event.user,
       eventTs: event.event_ts
@@ -205,10 +265,29 @@ const handleResolveReaction = async (event, channelDoc) => {
 
     await ensureAgentChannel(agent, channelDoc);
 
+    const messageTs = event.item.ts;
+    const slackChannelId = event.item.channel;
+
+    // First try direct lookup by the reacted message ts
+    let ticket = await KYCTicket.findOne({ slackChannelId, slackMessageTs: messageTs });
+
+    // If not found, check if the reaction was on a thread reply → find parent ticket
+    if (!ticket) {
+      const parentTs = await getMessageThreadTs(slackChannelId, messageTs);
+      if (parentTs && parentTs !== messageTs) {
+        ticket = await KYCTicket.findOne({ slackChannelId, slackMessageTs: parentTs });
+      }
+    }
+
+    // If still no ticket, auto-create one
+    if (!ticket) {
+      console.log(`📝 KYC Goals: Auto-creating ticket for resolve on ${messageTs} in ${channelDoc.name}`);
+    }
+
     await KYCTicket.resolveTicket({
       channelId: channelDoc._id,
-      slackChannelId: event.item.channel,
-      messageTs: event.item.ts,
+      slackChannelId,
+      messageTs: ticket ? ticket.slackMessageTs : messageTs,
       agentId: agent._id,
       agentSlackId: event.user,
       eventTs: event.event_ts
@@ -226,6 +305,7 @@ const handleThreadReply = async (event, channelDoc) => {
     await ensureAgentChannel(agent, channelDoc);
 
     await KYCTicket.recordReply({
+      channelId: channelDoc._id,
       slackChannelId: event.channel,
       threadTs: event.thread_ts,
       agentId: agent._id,
@@ -293,11 +373,11 @@ exports.getOverview = async (req, res) => {
       KYCTicket.countDocuments(match),
       KYCTicket.countDocuments({ ...match, status: 'resolved' }),
       KYCTicket.aggregate([
-        { $match: { ...match, timeToClaimSeconds: { $gt: 0 } } },
+        { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
         {
           $group: {
             _id: null,
-            avgClaimTime: { $avg: '$timeToClaimSeconds' },
+            avgResponseTime: { $avg: '$responseTimeSeconds' },
             avgHandlingTime: { $avg: '$totalHandlingTimeSeconds' },
             avgFirstReply: { $avg: '$timeToFirstReplySeconds' }
           }
@@ -306,7 +386,7 @@ exports.getOverview = async (req, res) => {
       KYCTicket.distinct('claimedByAgentId', { ...match, claimedByAgentId: { $ne: null } })
     ]);
 
-    const times = claimTimeStats[0] || { avgClaimTime: 0, avgHandlingTime: 0, avgFirstReply: 0 };
+    const times = claimTimeStats[0] || { avgResponseTime: 0, avgHandlingTime: 0, avgFirstReply: 0 };
 
     // Previous period comparison
     let prevMatch = {};
@@ -332,13 +412,13 @@ exports.getOverview = async (req, res) => {
     const [prevTotal, prevClaimTimeStats, prevActiveAgents] = await Promise.all([
       Object.keys(prevMatch).length ? KYCTicket.countDocuments(prevMatch) : Promise.resolve(0),
       Object.keys(prevMatch).length ? KYCTicket.aggregate([
-        { $match: { ...prevMatch, timeToClaimSeconds: { $gt: 0 } } },
-        { $group: { _id: null, avgClaimTime: { $avg: '$timeToClaimSeconds' } } }
+        { $match: { ...prevMatch, responseTimeSeconds: { $gt: 0 } } },
+        { $group: { _id: null, avgResponseTime: { $avg: '$responseTimeSeconds' } } }
       ]) : Promise.resolve([]),
       Object.keys(prevMatch).length ? KYCTicket.distinct('claimedByAgentId', { ...prevMatch, claimedByAgentId: { $ne: null } }) : Promise.resolve([])
     ]);
 
-    const prevTimes = prevClaimTimeStats[0] || { avgClaimTime: 0 };
+    const prevTimes = prevClaimTimeStats[0] || { avgResponseTime: 0 };
     const agentCount = activeAgentCount.length;
     const prevAgentCount = prevActiveAgents.length;
     const casesPerAgent = agentCount > 0 ? Math.round(totalTickets / agentCount) : 0;
@@ -353,7 +433,7 @@ exports.getOverview = async (req, res) => {
       success: true,
       data: {
         totalCases: { value: totalTickets, change: pctChange(totalTickets, prevTotal) },
-        avgResponseTime: { value: Math.round(times.avgClaimTime || 0), change: pctChange(times.avgClaimTime, prevTimes.avgClaimTime) },
+        avgResponseTime: { value: Math.round(times.avgResponseTime || 0), change: pctChange(times.avgResponseTime, prevTimes.avgResponseTime) },
         activeAgents: { value: agentCount, change: pctChange(agentCount, prevAgentCount) },
         casesPerAgent: { value: casesPerAgent, change: pctChange(casesPerAgent, prevCasesPerAgent) },
         resolvedCases: resolvedTickets,
@@ -383,9 +463,9 @@ exports.getAgents = async (req, res) => {
           totalCases: { $sum: 1 },
           resolvedCases: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
           channels: { $addToSet: '$slackChannelId' },
-          avgResponseTime: { $avg: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', null] } },
-          fastestResponse: { $min: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', null] } },
-          responseTimes: { $push: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', '$$REMOVE'] } },
+          avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+          fastestResponse: { $min: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+          responseTimes: { $push: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', '$$REMOVE'] } },
           casesByDay: { $push: { date: '$activityDate', status: '$status' } },
           shifts: { $push: '$shift' }
         }
@@ -417,11 +497,11 @@ exports.getAgents = async (req, res) => {
     const [thisWeekStats, lastWeekStats] = await Promise.all([
       KYCTicket.aggregate([
         { $match: { activityDate: { $gte: thisWeekStart, $lte: thisWeekEnd }, claimedByAgentId: { $ne: null } } },
-        { $group: { _id: '$claimedByAgentId', cases: { $sum: 1 }, avgTime: { $avg: '$timeToClaimSeconds' } } }
+        { $group: { _id: '$claimedByAgentId', cases: { $sum: 1 }, avgTime: { $avg: '$responseTimeSeconds' } } }
       ]),
       KYCTicket.aggregate([
         { $match: { activityDate: { $gte: lastWeekStart, $lt: lastWeekEnd }, claimedByAgentId: { $ne: null } } },
-        { $group: { _id: '$claimedByAgentId', cases: { $sum: 1 }, avgTime: { $avg: '$timeToClaimSeconds' } } }
+        { $group: { _id: '$claimedByAgentId', cases: { $sum: 1 }, avgTime: { $avg: '$responseTimeSeconds' } } }
       ])
     ]);
 
@@ -518,20 +598,20 @@ exports.getAgentDetail = async (req, res) => {
       const ch = channelMap[t.slackChannelId];
       const key = t.slackChannelId;
       if (!channelBreakdown[key]) {
-        channelBreakdown[key] = { name: ch?.name || key, cases: 0, resolved: 0, totalClaimTime: 0, claimCount: 0 };
+        channelBreakdown[key] = { name: ch?.name || key, cases: 0, resolved: 0, totalResponseTime: 0, responseCount: 0 };
       }
       channelBreakdown[key].cases++;
       if (t.status === 'resolved') channelBreakdown[key].resolved++;
-      if (t.timeToClaimSeconds > 0) {
-        channelBreakdown[key].totalClaimTime += t.timeToClaimSeconds;
-        channelBreakdown[key].claimCount++;
+      if (t.responseTimeSeconds > 0) {
+        channelBreakdown[key].totalResponseTime += t.responseTimeSeconds;
+        channelBreakdown[key].responseCount++;
       }
     });
 
     Object.values(channelBreakdown).forEach(cb => {
-      cb.avgResponseTime = cb.claimCount > 0 ? Math.round(cb.totalClaimTime / cb.claimCount) : 0;
-      delete cb.totalClaimTime;
-      delete cb.claimCount;
+      cb.avgResponseTime = cb.responseCount > 0 ? Math.round(cb.totalResponseTime / cb.responseCount) : 0;
+      delete cb.totalResponseTime;
+      delete cb.responseCount;
     });
 
     res.json({
@@ -544,7 +624,7 @@ exports.getAgentDetail = async (req, res) => {
           channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
           status: t.status,
           createdAt: t.createdAt,
-          timeToClaimSeconds: t.timeToClaimSeconds,
+          responseTimeSeconds: t.responseTimeSeconds,
           shift: t.shift
         }))
       }
@@ -574,7 +654,7 @@ exports.getChannels = async (req, res) => {
           resolvedCases: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
           openCases: { $sum: { $cond: [{ $in: ['$status', ['open', 'claimed', 'in_progress']] }, 1, 0] } },
           activeAgents: { $addToSet: '$claimedByAgentId' },
-          avgResponseTime: { $avg: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', null] } },
+          avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
           avgHandlingTime: { $avg: { $cond: [{ $gt: ['$totalHandlingTimeSeconds', 0] }, '$totalHandlingTimeSeconds', null] } },
           dailyData: { $push: { date: '$activityDate', agentId: '$claimedByAgentId' } }
         }
@@ -591,7 +671,7 @@ exports.getChannels = async (req, res) => {
         $group: {
           _id: { channel: '$slackChannelId', agent: '$claimedByAgentId' },
           cases: { $sum: 1 },
-          avgTime: { $avg: '$timeToClaimSeconds' }
+          avgTime: { $avg: '$responseTimeSeconds' }
         }
       }
     ]);
@@ -668,7 +748,7 @@ exports.getChannelDetail = async (req, res) => {
             totalCases: { $sum: 1 },
             resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
             open: { $sum: { $cond: [{ $ne: ['$status', 'resolved'] }, 1, 0] } },
-            avgClaimTime: { $avg: '$timeToClaimSeconds' },
+            avgClaimTime: { $avg: '$responseTimeSeconds' },
             avgHandling: { $avg: '$totalHandlingTimeSeconds' },
             agents: { $addToSet: '$claimedByAgentId' }
           }

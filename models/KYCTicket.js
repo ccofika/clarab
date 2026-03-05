@@ -68,6 +68,10 @@ const kycTicketSchema = new mongoose.Schema({
   totalHandlingTimeSeconds: {
     type: Number
   },
+  // Response time: from claim (⏳) to resolve (✅/❌)
+  responseTimeSeconds: {
+    type: Number
+  },
 
   // Agent references - claim
   claimedByAgentId: {
@@ -272,6 +276,11 @@ kycTicketSchema.statics.resolveTicket = async function(data) {
     ticket.totalHandlingTimeSeconds = Math.floor((resolveDate - ticket.createdAt) / 1000);
   }
 
+  // Compute response time: from claim (⏳) to resolve (✅/❌)
+  if (ticket.claimedAt) {
+    ticket.responseTimeSeconds = Math.floor((resolveDate - ticket.claimedAt) / 1000);
+  }
+
   await ticket.save();
   return ticket;
 };
@@ -280,10 +289,29 @@ kycTicketSchema.statics.resolveTicket = async function(data) {
  * Record a thread reply
  */
 kycTicketSchema.statics.recordReply = async function(data) {
-  const { slackChannelId, threadTs, agentId, agentSlackId, messageTs } = data;
+  const { slackChannelId, threadTs, agentId, agentSlackId, messageTs, channelId } = data;
 
-  const ticket = await this.findOne({ slackChannelId, slackMessageTs: threadTs });
-  if (!ticket) return null;
+  let ticket = await this.findOne({ slackChannelId, slackMessageTs: threadTs });
+  if (!ticket) {
+    // Auto-create ticket from the parent message (thread_ts)
+    if (channelId) {
+      console.log(`📝 KYCTicket.recordReply: Auto-creating ticket for thread ${threadTs} in ${slackChannelId}`);
+      const msgDate = new Date(parseFloat(threadTs) * 1000);
+      const hour = getBelgradeHour(msgDate);
+      ticket = await this.create({
+        channelId,
+        slackChannelId,
+        slackMessageTs: threadTs,
+        threadTs,
+        createdAt: msgDate,
+        status: 'open',
+        shift: getShiftFromHour(hour),
+        activityDate: getBelgradeDateString(msgDate)
+      });
+    } else {
+      return null;
+    }
+  }
 
   const replyDate = new Date(parseFloat(messageTs) * 1000);
 
