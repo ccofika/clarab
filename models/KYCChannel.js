@@ -21,6 +21,12 @@ const kycChannelSchema = new mongoose.Schema({
     type: Boolean,
     default: true
   },
+  // "full" = ⏳/✅ lifecycle, "message_count" = each agent message = 1 case (no reactions)
+  trackingMode: {
+    type: String,
+    enum: ['full', 'message_count'],
+    default: 'full'
+  },
   trackingConfig: {
     ticketDetection: {
       type: String,

@@ -170,7 +170,17 @@ exports.handleSlackEvents = async (req, res) => {
         return res.status(200).send();
       }
 
-      // Route events
+      // === MESSAGE_COUNT mode: each top-level agent message = 1 resolved case ===
+      if (channelDoc.trackingMode === 'message_count') {
+        if (event.type === 'message' && !event.thread_ts && !event.bot_id && !event.subtype) {
+          await handleMessageCountCase(event, channelDoc);
+        }
+        // Ignore reactions and thread replies for message_count channels
+        return res.status(200).send();
+      }
+
+      // === FULL mode: ⏳/✅ lifecycle ===
+      // Route reaction events
       if (event.type === 'reaction_added') {
         const config = channelDoc.trackingConfig || {};
 
@@ -205,6 +215,49 @@ exports.handleSlackEvents = async (req, res) => {
 };
 
 // --- Event handlers ---
+
+/**
+ * message_count mode: each top-level message from a KYC agent = 1 instantly resolved case
+ */
+const handleMessageCountCase = async (event, channelDoc) => {
+  try {
+    const agent = await resolveAgent(event.user);
+    if (!agent) {
+      // Not a tracked KYC agent, ignore
+      return;
+    }
+
+    await ensureAgentChannel(agent, channelDoc);
+
+    const msgDate = new Date(parseFloat(event.ts) * 1000);
+
+    console.log(`📨 KYC Goals [message_count]: ${agent.name} sent message in ${channelDoc.name}`);
+
+    await KYCTicket.create({
+      channelId: channelDoc._id,
+      slackChannelId: event.channel,
+      slackMessageTs: event.ts,
+      threadTs: event.ts,
+      createdAt: msgDate,
+      claimedAt: msgDate,
+      resolvedAt: msgDate,
+      claimedByAgentId: agent._id,
+      claimedBySlackId: event.user,
+      resolvedByAgentId: agent._id,
+      resolvedBySlackId: event.user,
+      status: 'resolved',
+      timeToClaimSeconds: 0,
+      responseTimeSeconds: 0,
+      totalHandlingTimeSeconds: 0,
+      shift: KYCTicket.getShiftFromHour(KYCTicket.getBelgradeHour(msgDate)),
+      activityDate: KYCTicket.getBelgradeDateString(msgDate)
+    });
+  } catch (error) {
+    // Duplicate message ts — ignore
+    if (error.code === 11000) return;
+    console.error('❌ Error handling message_count case:', error);
+  }
+};
 
 const handleNewMessage = async (event, channelDoc) => {
   try {
@@ -819,7 +872,7 @@ exports.seed = async (req, res) => {
       { name: 'mebit-kyc', slackChannelId: 'C03CNGD0L9W', organization: 'Mebit' },
       { name: 'fraud-abuse-kyc', slackChannelId: 'C058YDDMWAD', organization: 'Fraud' },
       { name: 'kyc-payments', slackChannelId: 'C07JQN3QSRZ', organization: 'Payments' },
-      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Poker' }
+      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Poker', trackingMode: 'message_count' }
     ];
 
     const channelResults = [];
