@@ -8,6 +8,7 @@ const {
   getChannels,
   getChannelDetail,
   getConfig,
+  getTrends,
   seed
 } = require('../controllers/kycGoalsController');
 
@@ -36,6 +37,7 @@ router.use(kycGoalsAuthorization);
 
 // Overview & stats
 router.get('/overview', getOverview);
+router.get('/trends', getTrends);
 
 // Agents
 router.get('/agents', getAgents);

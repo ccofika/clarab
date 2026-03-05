@@ -421,8 +421,10 @@ exports.getOverview = async (req, res) => {
   try {
     const match = buildMatchFilter(req.query);
 
+    const today = KYCTicket.getBelgradeDateString(new Date());
+
     // Current period stats
-    const [totalTickets, resolvedTickets, claimTimeStats, activeAgentCount] = await Promise.all([
+    const [totalTickets, resolvedTickets, claimTimeStats, activeAgentCount, openCases, resolvedToday] = await Promise.all([
       KYCTicket.countDocuments(match),
       KYCTicket.countDocuments({ ...match, status: 'resolved' }),
       KYCTicket.aggregate([
@@ -436,7 +438,9 @@ exports.getOverview = async (req, res) => {
           }
         }
       ]),
-      KYCTicket.distinct('claimedByAgentId', { ...match, claimedByAgentId: { $ne: null } })
+      KYCTicket.distinct('claimedByAgentId', { ...match, claimedByAgentId: { $ne: null } }),
+      KYCTicket.countDocuments({ ...match, status: { $ne: 'resolved' } }),
+      KYCTicket.countDocuments({ ...match, status: 'resolved', activityDate: today })
     ]);
 
     const times = claimTimeStats[0] || { avgResponseTime: 0, avgHandlingTime: 0, avgFirstReply: 0 };
@@ -490,6 +494,8 @@ exports.getOverview = async (req, res) => {
         activeAgents: { value: agentCount, change: pctChange(agentCount, prevAgentCount) },
         casesPerAgent: { value: casesPerAgent, change: pctChange(casesPerAgent, prevCasesPerAgent) },
         resolvedCases: resolvedTickets,
+        openCases,
+        resolvedToday,
         avgHandlingTime: Math.round(times.avgHandlingTime || 0),
         avgFirstReplyTime: Math.round(times.avgFirstReply || 0)
       }
@@ -761,6 +767,7 @@ exports.getChannels = async (req, res) => {
         _id: ch._id,
         name: ch.name,
         slackChannelId: ch.slackChannelId,
+        trackingMode: ch.trackingMode || 'full',
         totalCases: stat.totalCases || 0,
         resolvedCases: stat.resolvedCases || 0,
         backlog: stat.openCases || 0,
@@ -862,6 +869,120 @@ exports.getConfig = async (req, res) => {
 };
 
 /**
+ * GET /api/kyc-goals/trends
+ * Daily aggregated data for charts
+ */
+exports.getTrends = async (req, res) => {
+  try {
+    const match = buildMatchFilter(req.query);
+
+    // Fetch channel docs for name mapping
+    const allChannels = await KYCChannel.find({ isActive: true }).lean();
+    const channelNameMap = {};
+    allChannels.forEach(c => { channelNameMap[c.slackChannelId] = c.name; });
+
+    const [dailyCasesAgg, dailyResponseTimeAgg, dailyActiveAgentsAgg, shiftDistAgg] = await Promise.all([
+      // Daily cases with per-channel breakdown
+      KYCTicket.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: { date: '$activityDate', channel: '$slackChannelId' },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { '_id.date': 1 } }
+      ]),
+      // Daily response time stats
+      KYCTicket.aggregate([
+        { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
+        {
+          $group: {
+            _id: '$activityDate',
+            avg: { $avg: '$responseTimeSeconds' },
+            min: { $min: '$responseTimeSeconds' },
+            max: { $max: '$responseTimeSeconds' }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      // Daily active agents
+      KYCTicket.aggregate([
+        { $match: { ...match, claimedByAgentId: { $ne: null } } },
+        {
+          $group: {
+            _id: '$activityDate',
+            agents: { $addToSet: '$claimedByAgentId' }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      // Shift distribution by day
+      KYCTicket.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: { date: '$activityDate', shift: '$shift' },
+            count: { $sum: 1 }
+          }
+        },
+        { $sort: { '_id.date': 1 } }
+      ])
+    ]);
+
+    // Build dailyCases
+    const dailyCasesMap = {};
+    dailyCasesAgg.forEach(row => {
+      const date = row._id.date;
+      if (!dailyCasesMap[date]) dailyCasesMap[date] = { date, total: 0, byChannel: {} };
+      const channelName = channelNameMap[row._id.channel] || row._id.channel;
+      dailyCasesMap[date].total += row.count;
+      dailyCasesMap[date].byChannel[channelName] = (dailyCasesMap[date].byChannel[channelName] || 0) + row.count;
+    });
+    const dailyCases = Object.values(dailyCasesMap).sort((a, b) => a.date.localeCompare(b.date));
+
+    // Build dailyResponseTime
+    const dailyResponseTime = dailyResponseTimeAgg.map(row => ({
+      date: row._id,
+      avg: Math.round(row.avg || 0),
+      min: row.min || 0,
+      max: row.max || 0
+    }));
+
+    // Build dailyActiveAgents
+    const dailyActiveAgents = dailyActiveAgentsAgg.map(row => ({
+      date: row._id,
+      count: row.agents.filter(Boolean).length
+    }));
+
+    // Build shiftDistribution
+    const shiftMap = {};
+    shiftDistAgg.forEach(row => {
+      const date = row._id.date;
+      if (!shiftMap[date]) shiftMap[date] = { date, morning: 0, afternoon: 0, night: 0 };
+      const shift = row._id.shift;
+      if (shift && shiftMap[date][shift] !== undefined) {
+        shiftMap[date][shift] = row.count;
+      }
+    });
+    const shiftDistribution = Object.values(shiftMap).sort((a, b) => a.date.localeCompare(b.date));
+
+    res.json({
+      success: true,
+      data: {
+        dailyCases,
+        dailyResponseTime,
+        dailyActiveAgents,
+        shiftDistribution
+      }
+    });
+  } catch (error) {
+    console.error('Error in getTrends:', error);
+    res.status(500).json({ message: 'Failed to fetch trends', error: error.message });
+  }
+};
+
+/**
  * POST /api/kyc-goals/seed
  * Upsert 4 channels + 73 agents
  */
@@ -869,10 +990,23 @@ exports.seed = async (req, res) => {
   try {
     // Seed channels
     const channelSeeds = [
-      { name: 'mebit-kyc', slackChannelId: 'C03CNGD0L9W', organization: 'Mebit' },
-      { name: 'fraud-abuse-kyc', slackChannelId: 'C058YDDMWAD', organization: 'Fraud' },
-      { name: 'kyc-payments', slackChannelId: 'C07JQN3QSRZ', organization: 'Payments' },
-      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Poker', trackingMode: 'message_count' }
+      // Stake.com (6 channels)
+      { name: 'mebit-kyc', slackChannelId: 'C03CNGD0L9W', organization: 'Stake.com' },
+      { name: 'fraud-abuse-kyc', slackChannelId: 'C058YDDMWAD', organization: 'Stake.com' },
+      { name: 'kyc-payments', slackChannelId: 'C07JQN3QSRZ', organization: 'Stake.com' },
+      { name: 'kyc-poker', slackChannelId: 'C07U69U0FFS', organization: 'Stake.com', trackingMode: 'message_count' },
+      { name: 'sportsbook-kyc_team', slackChannelId: 'C03UNB9F5BP', organization: 'Stake.com' },
+      { name: 'vip-hosts-kyc', slackChannelId: 'C069WRZHMKP', organization: 'Stake.com' },
+      // Stake.us (2 channels)
+      { name: 'po-box-stake-us', slackChannelId: 'C07AP7TBLD9', organization: 'Stake.us' },
+      { name: 'stake-us-veriff-pd', slackChannelId: 'C07AP8VT2RG', organization: 'Stake.us' },
+      // Stake Brazil (1 channel)
+      { name: 'br-kyc-support', slackChannelId: 'C086ZK47KNE', organization: 'Stake Brazil' },
+      // Stake Denmark (2 channels)
+      { name: 'dk-kyc-compliance', slackChannelId: 'C09RQM4T11B', organization: 'Stake Denmark' },
+      { name: 'dk-kyc-support', slackChannelId: 'C09M61ADX97', organization: 'Stake Denmark' },
+      // Stake Italy (1 channel)
+      { name: 'italy-support-kyc', slackChannelId: 'C0909QR6W21', organization: 'Stake Italy' }
     ];
 
     const channelResults = [];
