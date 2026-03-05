@@ -38,6 +38,12 @@ const kycAgentSchema = new mongoose.Schema({
     default: null
   },
 
+  // Channels this agent has acted in (populated dynamically)
+  channels: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'KYCChannel'
+  }],
+
   // Stats cache (updated periodically)
   statsCache: {
     totalMessages: { type: Number, default: 0 },
