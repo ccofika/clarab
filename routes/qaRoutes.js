@@ -884,7 +884,18 @@ router.post('/acp/query', async (req, res) => {
 
     const headers = {
       'Content-Type': 'application/json',
-      'Cookie': `CF_Authorization=${cfToken}`
+      'Cookie': `CF_Authorization=${cfToken}`,
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Origin': 'https://buyconcorde.club',
+      'Referer': 'https://buyconcorde.club/',
+      'Sec-Fetch-Dest': 'empty',
+      'Sec-Fetch-Mode': 'cors',
+      'Sec-Fetch-Site': 'same-origin',
+      'Sec-Ch-Ua': '"Chromium";v="131", "Not_A Brand";v="24"',
+      'Sec-Ch-Ua-Mobile': '?0',
+      'Sec-Ch-Ua-Platform': '"Windows"'
     };
 
     // Add Stake API token if configured
@@ -895,7 +906,8 @@ router.post('/acp/query', async (req, res) => {
     const acpResponse = await fetch('https://buyconcorde.club/_api/graphql', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ query, variables })
+      body: JSON.stringify({ query, variables }),
+      redirect: 'follow'
     });
 
     if (!acpResponse.ok) {
