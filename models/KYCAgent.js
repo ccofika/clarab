@@ -24,6 +24,9 @@ const kycAgentSchema = new mongoose.Schema({
   slackUsername: {
     type: String
   },
+  slackAvatarUrl: {
+    type: String
+  },
 
   // Status
   isActive: {

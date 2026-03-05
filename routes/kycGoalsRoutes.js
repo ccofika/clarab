@@ -7,6 +7,7 @@ const {
   getAgentDetail,
   getChannels,
   getChannelDetail,
+  getActivityFeed,
   getConfig,
   getTrends,
   seed
@@ -46,6 +47,9 @@ router.get('/agents/:id', getAgentDetail);
 // Channels
 router.get('/channels', getChannels);
 router.get('/channels/:id', getChannelDetail);
+
+// Activity Feed
+router.get('/activity-feed', getActivityFeed);
 
 // Config
 router.get('/config', getConfig);

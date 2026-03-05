@@ -43,6 +43,15 @@ const kycTicketSchema = new mongoose.Schema({
     type: String
   },
 
+  // Original message content
+  messageText: {
+    type: String,
+    default: ''
+  },
+  messageAuthorSlackId: {
+    type: String
+  },
+
   // Timestamps
   createdAt: {
     type: Date,
@@ -149,7 +158,7 @@ kycTicketSchema.statics.getBelgradeHour = getBelgradeHour;
  * Create a new open ticket from a top-level message
  */
 kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
-  const { channelId, slackChannelId, slackMessageTs, caseType } = data;
+  const { channelId, slackChannelId, slackMessageTs, caseType, messageText, messageAuthorSlackId } = data;
 
   const existing = await this.findOne({ slackChannelId, slackMessageTs });
   if (existing) return existing;
@@ -168,6 +177,8 @@ kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
     activityDate: getBelgradeDateString(msgDate)
   };
   if (caseType) doc.caseType = caseType;
+  if (messageText) doc.messageText = messageText;
+  if (messageAuthorSlackId) doc.messageAuthorSlackId = messageAuthorSlackId;
 
   return this.create(doc);
 };

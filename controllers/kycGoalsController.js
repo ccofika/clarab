@@ -46,7 +46,23 @@ const verifySlackSignature = (req, rawBody) => {
  */
 const resolveAgent = async (slackUserId) => {
   let agent = await KYCAgent.findBySlackId(slackUserId);
-  if (agent) return agent;
+  if (agent) {
+    // Backfill avatar if missing
+    if (!agent.slackAvatarUrl) {
+      const c = getSlackClient();
+      if (c) {
+        try {
+          const info = await c.users.info({ user: slackUserId });
+          if (info.ok) {
+            const p = info.user.profile;
+            agent.slackAvatarUrl = p.image_72 || p.image_48 || p.image_32 || '';
+            await agent.save();
+          }
+        } catch (_) { /* ignore */ }
+      }
+    }
+    return agent;
+  }
 
   const client = getSlackClient();
   if (!client) return null;
@@ -58,6 +74,9 @@ const resolveAgent = async (slackUserId) => {
       if (agent) {
         agent.slackUserId = slackUserId;
         agent.slackUsername = userInfo.user.name;
+        // Save Slack avatar (prefer 72px, fallback to 48px or 32px)
+        const profile = userInfo.user.profile;
+        agent.slackAvatarUrl = profile.image_72 || profile.image_48 || profile.image_32 || '';
         await agent.save();
       }
     }
@@ -271,6 +290,8 @@ const handleMessageCountCase = async (event, channelDoc) => {
       resolvedByAgentId: agent._id,
       resolvedBySlackId: event.user,
       status: 'resolved',
+      messageText: (event.text || '').substring(0, 500),
+      messageAuthorSlackId: event.user,
       timeToClaimSeconds: 0,
       responseTimeSeconds: 0,
       totalHandlingTimeSeconds: 0,
@@ -280,7 +301,7 @@ const handleMessageCountCase = async (event, channelDoc) => {
   } catch (error) {
     // Duplicate message ts — ignore
     if (error.code === 11000) return;
-    console.error('❌ Error handling message_count case:', error);
+    console.error('Error handling message_count case:', error);
   }
 };
 
@@ -290,7 +311,9 @@ const handleNewMessage = async (event, channelDoc) => {
     await KYCTicket.findOrCreateFromMessage({
       channelId: channelDoc._id,
       slackChannelId: event.channel,
-      slackMessageTs: event.ts
+      slackMessageTs: event.ts,
+      messageText: (event.text || '').substring(0, 500),
+      messageAuthorSlackId: event.user
     });
   } catch (error) {
     console.error('❌ Error handling new message:', error);
@@ -325,6 +348,8 @@ const handleHybridMessage = async (event, channelDoc) => {
         resolvedBySlackId: event.user,
         status: 'resolved',
         caseType: 'agent_initiated',
+        messageText: (event.text || '').substring(0, 500),
+        messageAuthorSlackId: event.user,
         timeToClaimSeconds: 0,
         responseTimeSeconds: 0,
         totalHandlingTimeSeconds: 0,
@@ -339,7 +364,9 @@ const handleHybridMessage = async (event, channelDoc) => {
         channelId: channelDoc._id,
         slackChannelId: event.channel,
         slackMessageTs: event.ts,
-        caseType: 'external_request'
+        caseType: 'external_request',
+        messageText: (event.text || '').substring(0, 500),
+        messageAuthorSlackId: event.user
       });
     }
   } catch (error) {
@@ -686,6 +713,7 @@ exports.getAgents = async (req, res) => {
         rank: idx + 1,
         name: agentInfo.name || 'Unknown',
         email: agentInfo.email || '',
+        slackAvatarUrl: agentInfo.slackAvatarUrl || '',
         channels: channelTags,
         totalCases: stat.totalCases,
         resolvedCases: stat.resolvedCases,
@@ -715,58 +743,227 @@ exports.getAgents = async (req, res) => {
 exports.getAgentDetail = async (req, res) => {
   try {
     const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const skip = (page - 1) * limit;
+
     const match = buildMatchFilter(req.query);
-    match.claimedByAgentId = new mongoose.Types.ObjectId(id);
+    const agentObjId = new mongoose.Types.ObjectId(id);
 
     const agent = await KYCAgent.findById(id).lean();
     if (!agent) return res.status(404).json({ message: 'Agent not found' });
 
-    const tickets = await KYCTicket.find(match).sort({ createdAt: -1 }).limit(200).lean();
+    // All tickets for this agent (for stats)
+    const agentMatch = { ...match, claimedByAgentId: agentObjId };
 
-    const channelDocs = await KYCChannel.find({ slackChannelId: { $in: [...new Set(tickets.map(t => t.slackChannelId))] } }).lean();
+    // Run stats aggregation and paginated timeline in parallel
+    const [statsAgg, timelineTickets, totalCount, allChannels] = await Promise.all([
+      KYCTicket.aggregate([
+        { $match: agentMatch },
+        {
+          $group: {
+            _id: null,
+            totalCases: { $sum: 1 },
+            resolvedCases: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
+            openCases: { $sum: { $cond: [{ $in: ['$status', ['open', 'claimed', 'in_progress']] }, 1, 0] } },
+            agentInitiated: { $sum: { $cond: [{ $eq: ['$caseType', 'agent_initiated'] }, 1, 0] } },
+            externalRequest: { $sum: { $cond: [{ $eq: ['$caseType', 'external_request'] }, 1, 0] } },
+            avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            minResponseTime: { $min: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            maxResponseTime: { $max: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            avgClaimTime: { $avg: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', null] } },
+            avgHandlingTime: { $avg: { $cond: [{ $gt: ['$totalHandlingTimeSeconds', 0] }, '$totalHandlingTimeSeconds', null] } },
+            morningCases: { $sum: { $cond: [{ $eq: ['$shift', 'morning'] }, 1, 0] } },
+            afternoonCases: { $sum: { $cond: [{ $eq: ['$shift', 'afternoon'] }, 1, 0] } },
+            nightCases: { $sum: { $cond: [{ $eq: ['$shift', 'night'] }, 1, 0] } },
+            channels: { $addToSet: '$slackChannelId' },
+            dates: { $addToSet: '$activityDate' }
+          }
+        }
+      ]),
+      KYCTicket.find(agentMatch).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      KYCTicket.countDocuments(agentMatch),
+      KYCChannel.find({ isActive: true }).lean()
+    ]);
+
     const channelMap = {};
-    channelDocs.forEach(c => { channelMap[c.slackChannelId] = c; });
+    allChannels.forEach(c => { channelMap[c.slackChannelId] = c; });
+
+    const stats = statsAgg[0] || {};
 
     // Per-channel breakdown
-    const channelBreakdown = {};
-    tickets.forEach(t => {
-      const ch = channelMap[t.slackChannelId];
-      const key = t.slackChannelId;
-      if (!channelBreakdown[key]) {
-        channelBreakdown[key] = { name: ch?.name || key, cases: 0, resolved: 0, totalResponseTime: 0, responseCount: 0 };
+    const channelBreakdownAgg = await KYCTicket.aggregate([
+      { $match: agentMatch },
+      {
+        $group: {
+          _id: '$slackChannelId',
+          cases: { $sum: 1 },
+          resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
+          avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+          agentInitiated: { $sum: { $cond: [{ $eq: ['$caseType', 'agent_initiated'] }, 1, 0] } },
+          externalRequest: { $sum: { $cond: [{ $eq: ['$caseType', 'external_request'] }, 1, 0] } }
+        }
       }
-      channelBreakdown[key].cases++;
-      if (t.status === 'resolved') channelBreakdown[key].resolved++;
-      if (t.responseTimeSeconds > 0) {
-        channelBreakdown[key].totalResponseTime += t.responseTimeSeconds;
-        channelBreakdown[key].responseCount++;
-      }
-    });
+    ]);
 
-    Object.values(channelBreakdown).forEach(cb => {
-      cb.avgResponseTime = cb.responseCount > 0 ? Math.round(cb.totalResponseTime / cb.responseCount) : 0;
-      delete cb.totalResponseTime;
-      delete cb.responseCount;
-    });
+    const channelBreakdown = channelBreakdownAgg.map(cb => ({
+      name: channelMap[cb._id]?.name || cb._id,
+      organization: channelMap[cb._id]?.organization || 'Unknown',
+      cases: cb.cases,
+      resolved: cb.resolved,
+      avgResponseTime: Math.round(cb.avgResponseTime || 0),
+      agentInitiated: cb.agentInitiated,
+      externalRequest: cb.externalRequest
+    }));
+
+    // Daily activity for sparkline
+    const dailyActivity = await KYCTicket.aggregate([
+      { $match: agentMatch },
+      { $group: { _id: '$activityDate', cases: { $sum: 1 } } },
+      { $sort: { _id: 1 } }
+    ]);
+
+    // Map timeline tickets with channel names
+    const timeline = timelineTickets.map(t => ({
+      _id: t._id,
+      channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
+      organization: channelMap[t.slackChannelId]?.organization || 'Unknown',
+      status: t.status,
+      caseType: t.caseType || 'external_request',
+      messageText: t.messageText || '',
+      createdAt: t.createdAt,
+      claimedAt: t.claimedAt,
+      resolvedAt: t.resolvedAt,
+      timeToClaimSeconds: t.timeToClaimSeconds,
+      responseTimeSeconds: t.responseTimeSeconds,
+      totalHandlingTimeSeconds: t.totalHandlingTimeSeconds,
+      shift: t.shift,
+      activityDate: t.activityDate,
+      replyCount: t.replyCount || 0
+    }));
 
     res.json({
       success: true,
       agent: {
         ...agent,
-        channelBreakdown: Object.values(channelBreakdown),
-        recentTickets: tickets.slice(0, 50).map(t => ({
-          _id: t._id,
-          channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
-          status: t.status,
-          createdAt: t.createdAt,
-          responseTimeSeconds: t.responseTimeSeconds,
-          shift: t.shift
-        }))
+        stats: {
+          totalCases: stats.totalCases || 0,
+          resolvedCases: stats.resolvedCases || 0,
+          openCases: stats.openCases || 0,
+          agentInitiated: stats.agentInitiated || 0,
+          externalRequest: stats.externalRequest || 0,
+          avgResponseTime: Math.round(stats.avgResponseTime || 0),
+          minResponseTime: Math.round(stats.minResponseTime || 0),
+          maxResponseTime: Math.round(stats.maxResponseTime || 0),
+          avgClaimTime: Math.round(stats.avgClaimTime || 0),
+          avgHandlingTime: Math.round(stats.avgHandlingTime || 0),
+          resolutionRate: stats.totalCases > 0 ? Math.round((stats.resolvedCases / stats.totalCases) * 100) : 0,
+          shifts: { morning: stats.morningCases || 0, afternoon: stats.afternoonCases || 0, night: stats.nightCases || 0 },
+          activeChannels: (stats.channels || []).length,
+          activeDays: (stats.dates || []).length
+        },
+        channelBreakdown,
+        dailyActivity: dailyActivity.map(d => ({ date: d._id, cases: d.cases }))
+      },
+      timeline,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit)
       }
     });
   } catch (error) {
     console.error('Error in getAgentDetail:', error);
     res.status(500).json({ message: 'Failed to fetch agent detail', error: error.message });
+  }
+};
+
+/**
+ * GET /api/kyc-goals/activity-feed
+ * Paginated activity feed, filterable by channel
+ */
+exports.getActivityFeed = async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const skip = (page - 1) * limit;
+    const channelFilter = req.query.channel; // slackChannelId or channel name
+
+    const match = buildMatchFilter(req.query);
+
+    // Optional channel filter
+    if (channelFilter) {
+      const channelDoc = await KYCChannel.findOne({
+        $or: [{ slackChannelId: channelFilter }, { name: channelFilter }]
+      });
+      if (channelDoc) {
+        match.slackChannelId = channelDoc.slackChannelId;
+      }
+    }
+
+    const [tickets, totalCount, allChannels, allAgents] = await Promise.all([
+      KYCTicket.find(match).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      KYCTicket.countDocuments(match),
+      KYCChannel.find({ isActive: true }).lean(),
+      KYCAgent.find().lean()
+    ]);
+
+    const channelMap = {};
+    allChannels.forEach(c => { channelMap[c.slackChannelId] = c; });
+
+    const agentMap = {};
+    allAgents.forEach(a => { agentMap[a._id.toString()] = a; });
+
+    const items = tickets.map(t => ({
+      _id: t._id,
+      channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
+      organization: channelMap[t.slackChannelId]?.organization || 'Unknown',
+      trackingMode: channelMap[t.slackChannelId]?.trackingMode || 'full',
+      status: t.status,
+      caseType: t.caseType || 'external_request',
+      messageText: t.messageText || '',
+      messageAuthorSlackId: t.messageAuthorSlackId,
+      createdAt: t.createdAt,
+      claimedAt: t.claimedAt,
+      resolvedAt: t.resolvedAt,
+      timeToClaimSeconds: t.timeToClaimSeconds,
+      responseTimeSeconds: t.responseTimeSeconds,
+      totalHandlingTimeSeconds: t.totalHandlingTimeSeconds,
+      shift: t.shift,
+      activityDate: t.activityDate,
+      replyCount: t.replyCount || 0,
+      claimedBy: t.claimedByAgentId ? {
+        _id: t.claimedByAgentId,
+        name: agentMap[t.claimedByAgentId.toString()]?.name || 'Unknown',
+        email: agentMap[t.claimedByAgentId.toString()]?.email,
+        slackAvatarUrl: agentMap[t.claimedByAgentId.toString()]?.slackAvatarUrl || ''
+      } : null,
+      resolvedBy: t.resolvedByAgentId ? {
+        _id: t.resolvedByAgentId,
+        name: agentMap[t.resolvedByAgentId.toString()]?.name || 'Unknown',
+        email: agentMap[t.resolvedByAgentId.toString()]?.email,
+        slackAvatarUrl: agentMap[t.resolvedByAgentId.toString()]?.slackAvatarUrl || ''
+      } : null
+    }));
+
+    // Available channels for filter dropdown
+    const channelOptions = allChannels.map(c => ({ name: c.name, slackChannelId: c.slackChannelId, organization: c.organization }));
+
+    res.json({
+      success: true,
+      items,
+      channels: channelOptions,
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit)
+      }
+    });
+  } catch (error) {
+    console.error('Error in getActivityFeed:', error);
+    res.status(500).json({ message: 'Failed to fetch activity feed', error: error.message });
   }
 };
 
@@ -1194,10 +1391,32 @@ exports.seed = async (req, res) => {
       }
     }
 
+    // Backfill Slack avatars for agents that have slackUserId but no avatar
+    let avatarsUpdated = 0;
+    const client = getSlackClient();
+    if (client) {
+      const agentsNeedingAvatar = await KYCAgent.find({
+        slackUserId: { $exists: true, $ne: null },
+        $or: [{ slackAvatarUrl: { $exists: false } }, { slackAvatarUrl: '' }, { slackAvatarUrl: null }]
+      });
+      for (const ag of agentsNeedingAvatar) {
+        try {
+          const info = await client.users.info({ user: ag.slackUserId });
+          if (info.ok) {
+            const p = info.user.profile;
+            ag.slackAvatarUrl = p.image_72 || p.image_48 || p.image_32 || '';
+            await ag.save();
+            avatarsUpdated++;
+          }
+        } catch (_) { /* rate limit or error, skip */ }
+      }
+    }
+
     res.json({
       success: true,
       channels: { seeded: channelResults.length },
-      agents: agentResults
+      agents: agentResults,
+      avatars: { updated: avatarsUpdated }
     });
   } catch (error) {
     console.error('Error in seed:', error);
