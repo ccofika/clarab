@@ -130,6 +130,12 @@ const kycTicketSchema = new mongoose.Schema({
     default: 'external_request'
   },
 
+  // Last non-agent message in thread (for accurate wait time calculation)
+  // When a thread gets a new external message, wait time resets from this point
+  lastExternalMessageAt: {
+    type: Date
+  },
+
   // Dismissed from long-waiting panels (false alarm / bug)
   dismissed: {
     type: Boolean,
@@ -184,6 +190,7 @@ kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
     slackMessageTs,
     threadTs: slackMessageTs,
     createdAt: msgDate,
+    lastExternalMessageAt: msgDate,
     status: 'open',
     shift: getShiftFromHour(hour),
     activityDate: getBelgradeDateString(msgDate)
@@ -243,9 +250,10 @@ kycTicketSchema.statics.claimTicket = async function(data) {
   ticket.claimedAt = claimDate;
   ticket.status = 'claimed';
 
-  // Compute time to claim
-  if (ticket.createdAt) {
-    ticket.timeToClaimSeconds = Math.floor((claimDate - ticket.createdAt) / 1000);
+  // Compute time to claim — from last external message (or createdAt if no thread activity)
+  const waitStart = ticket.lastExternalMessageAt || ticket.createdAt;
+  if (waitStart) {
+    ticket.timeToClaimSeconds = Math.floor((claimDate - waitStart) / 1000);
   }
 
   await ticket.save();
@@ -296,19 +304,21 @@ kycTicketSchema.statics.resolveTicket = async function(data) {
   ticket.resolvedAt = resolveDate;
   ticket.status = 'resolved';
 
+  const waitStart = ticket.lastExternalMessageAt || ticket.createdAt;
+
   // If not previously claimed, also set claim info
   if (!ticket.claimedByAgentId) {
     ticket.claimedByAgentId = agentId;
     ticket.claimedBySlackId = agentSlackId;
     ticket.claimedAt = resolveDate;
-    if (ticket.createdAt) {
-      ticket.timeToClaimSeconds = Math.floor((resolveDate - ticket.createdAt) / 1000);
+    if (waitStart) {
+      ticket.timeToClaimSeconds = Math.floor((resolveDate - waitStart) / 1000);
     }
   }
 
-  // Compute total handling time
-  if (ticket.createdAt) {
-    ticket.totalHandlingTimeSeconds = Math.floor((resolveDate - ticket.createdAt) / 1000);
+  // Compute total handling time — from last external message (not original creation)
+  if (waitStart) {
+    ticket.totalHandlingTimeSeconds = Math.floor((resolveDate - waitStart) / 1000);
   }
 
   // Compute response time: from claim (⏳) to resolve (✅/❌)
@@ -359,11 +369,13 @@ kycTicketSchema.statics.recordReply = async function(data) {
   });
   ticket.replyCount = (ticket.replyCount || 0) + 1;
 
+  const waitStart = ticket.lastExternalMessageAt || ticket.createdAt;
+
   // Track first reply time
   if (!ticket.firstReplyAt) {
     ticket.firstReplyAt = replyDate;
-    if (ticket.createdAt) {
-      ticket.timeToFirstReplySeconds = Math.floor((replyDate - ticket.createdAt) / 1000);
+    if (waitStart) {
+      ticket.timeToFirstReplySeconds = Math.floor((replyDate - waitStart) / 1000);
     }
   }
 
@@ -373,12 +385,51 @@ kycTicketSchema.statics.recordReply = async function(data) {
     ticket.claimedBySlackId = agentSlackId;
     ticket.claimedAt = replyDate;
     ticket.status = 'in_progress';
-    if (ticket.createdAt) {
-      ticket.timeToClaimSeconds = Math.floor((replyDate - ticket.createdAt) / 1000);
+    if (waitStart) {
+      ticket.timeToClaimSeconds = Math.floor((replyDate - waitStart) / 1000);
     }
   } else if (ticket.status === 'claimed') {
     ticket.status = 'in_progress';
   }
+
+  await ticket.save();
+  return ticket;
+};
+
+/**
+ * Record a non-agent thread message (resets wait time)
+ * Called when someone who is NOT a KYC agent posts in a thread
+ */
+kycTicketSchema.statics.recordExternalThreadMessage = async function(data) {
+  const { slackChannelId, threadTs, messageTs } = data;
+
+  let ticket = await this.findOne({ slackChannelId, slackMessageTs: threadTs });
+  if (!ticket) return null;
+
+  const msgDate = new Date(parseFloat(messageTs) * 1000);
+
+  // Update the "clock start" for wait time
+  ticket.lastExternalMessageAt = msgDate;
+
+  // If ticket was resolved or in_progress, reopen it — new question needs attention
+  if (ticket.status === 'resolved') {
+    ticket.status = 'open';
+    ticket.resolvedAt = undefined;
+    ticket.resolvedByAgentId = undefined;
+    ticket.resolvedBySlackId = undefined;
+    ticket.responseTimeSeconds = undefined;
+    ticket.totalHandlingTimeSeconds = undefined;
+    // Reset claim so agents can re-claim
+    ticket.claimedAt = undefined;
+    ticket.claimedByAgentId = undefined;
+    ticket.claimedBySlackId = undefined;
+    ticket.timeToClaimSeconds = undefined;
+  }
+
+  // Update activityDate and shift to the new message's date
+  const hour = getBelgradeHour(msgDate);
+  ticket.shift = getShiftFromHour(hour);
+  ticket.activityDate = getBelgradeDateString(msgDate);
 
   await ticket.save();
   return ticket;

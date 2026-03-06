@@ -456,7 +456,17 @@ const handleResolveReaction = async (event, channelDoc) => {
 const handleThreadReply = async (event, channelDoc) => {
   try {
     const agent = await resolveAgent(event.user);
-    if (!agent) return;
+
+    if (!agent) {
+      // Non-agent thread message → reset wait timer on the ticket
+      console.log(`📨 KYC Goals: External thread reply in ${channelDoc.name}, thread ${event.thread_ts}, ts: ${event.ts}`);
+      await KYCTicket.recordExternalThreadMessage({
+        slackChannelId: event.channel,
+        threadTs: event.thread_ts,
+        messageTs: event.ts
+      });
+      return;
+    }
 
     await ensureAgentChannel(agent, channelDoc);
 
@@ -1008,7 +1018,7 @@ exports.getActivityFeed = async (req, res) => {
       shift: t.shift,
       activityDate: t.activityDate,
       replyCount: t.replyCount || 0,
-      waitingSeconds: t.status !== 'resolved' ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 1000) : undefined,
+      waitingSeconds: t.status !== 'resolved' ? Math.floor((Date.now() - new Date(t.lastExternalMessageAt || t.createdAt).getTime()) / 1000) : undefined,
       claimedBy: t.claimedByAgentId ? {
         _id: t.claimedByAgentId,
         name: agentMap[t.claimedByAgentId.toString()]?.name || 'Unknown',
@@ -1021,14 +1031,18 @@ exports.getActivityFeed = async (req, res) => {
       } : null
     });
 
-    // Long waiting: currently unresolved tickets open > 10 min (exclude dismissed)
+    // Long waiting: currently unresolved tickets waiting > 10 min since last external message (exclude dismissed)
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const lwPage = parseInt(req.query.lwPage) || 1;
     const lwLimit = parseInt(req.query.lwLimit) || 30;
     const lwFilter = {
       status: { $in: ['open', 'claimed', 'in_progress'] },
-      createdAt: { $lte: tenMinAgo },
-      dismissed: { $ne: true }
+      dismissed: { $ne: true },
+      // Use lastExternalMessageAt if set, otherwise fall back to createdAt
+      $or: [
+        { lastExternalMessageAt: { $exists: true, $lte: tenMinAgo } },
+        { lastExternalMessageAt: { $exists: false }, createdAt: { $lte: tenMinAgo } }
+      ]
     };
     const [longWaitingTickets, lwTotal] = await Promise.all([
       KYCTicket.find(lwFilter).sort({ createdAt: 1 }).skip((lwPage - 1) * lwLimit).limit(lwLimit).lean(),
