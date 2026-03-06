@@ -493,12 +493,14 @@ const buildMatchFilter = (query) => {
   }
 
   if (query.channelIds) {
-    const ids = Array.isArray(query.channelIds) ? query.channelIds : [query.channelIds];
+    const raw = query.channelIds;
+    const ids = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',').map(s => s.trim()).filter(Boolean) : [raw];
     match.slackChannelId = { $in: ids };
   }
 
   if (query.agentIds) {
-    const ids = Array.isArray(query.agentIds) ? query.agentIds : [query.agentIds];
+    const raw = query.agentIds;
+    const ids = Array.isArray(raw) ? raw : typeof raw === 'string' ? raw.split(',').map(s => s.trim()).filter(Boolean) : [raw];
     match.claimedByAgentId = { $in: ids.map(id => new mongoose.Types.ObjectId(id)) };
   }
 
@@ -514,6 +516,16 @@ const buildMatchFilter = (query) => {
   }
 
   return match;
+};
+
+/**
+ * Helper: add claimedByAgentId: { $ne: null } without overwriting an existing $in filter
+ */
+const withClaimedAgent = (match) => {
+  if (match.claimedByAgentId) {
+    return { ...match };
+  }
+  return { ...match, claimedByAgentId: { $ne: null } };
 };
 
 /**
@@ -541,7 +553,7 @@ exports.getOverview = async (req, res) => {
           }
         }
       ]),
-      KYCTicket.distinct('claimedByAgentId', { ...match, claimedByAgentId: { $ne: null } }),
+      KYCTicket.distinct('claimedByAgentId', withClaimedAgent(match)),
       KYCTicket.countDocuments({ ...match, status: { $ne: 'resolved' } }),
       KYCTicket.countDocuments({ ...match, status: 'resolved', activityDate: today })
     ]);
@@ -575,7 +587,7 @@ exports.getOverview = async (req, res) => {
         { $match: { ...prevMatch, responseTimeSeconds: { $gt: 0 } } },
         { $group: { _id: null, avgResponseTime: { $avg: '$responseTimeSeconds' } } }
       ]) : Promise.resolve([]),
-      Object.keys(prevMatch).length ? KYCTicket.distinct('claimedByAgentId', { ...prevMatch, claimedByAgentId: { $ne: null } }) : Promise.resolve([])
+      Object.keys(prevMatch).length ? KYCTicket.distinct('claimedByAgentId', withClaimedAgent(prevMatch)) : Promise.resolve([])
     ]);
 
     const prevTimes = prevClaimTimeStats[0] || { avgResponseTime: 0 };
@@ -618,13 +630,15 @@ exports.getAgents = async (req, res) => {
     const match = buildMatchFilter(req.query);
 
     const agentStats = await KYCTicket.aggregate([
-      { $match: { ...match, claimedByAgentId: { $ne: null } } },
+      { $match: withClaimedAgent(match) },
       {
         $group: {
           _id: '$claimedByAgentId',
           totalCases: { $sum: 1 },
           resolvedCases: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
           channels: { $addToSet: '$slackChannelId' },
+          channelCases: { $push: '$slackChannelId' },
+          channelResponsePairs: { $push: { ch: '$slackChannelId', rt: '$responseTimeSeconds', res: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } } },
           avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
           fastestResponse: { $min: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
           responseTimes: { $push: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', '$$REMOVE'] } },
@@ -699,10 +713,32 @@ exports.getAgents = async (req, res) => {
         if (s) shiftDist[s] = (shiftDist[s] || 0) + 1;
       });
 
-      const channelTags = stat.channels.map(cId => {
-        const ch = channelMap[cId];
-        return ch ? { name: ch.name, org: ch.organization } : { name: cId, org: 'Unknown' };
+      // Per-channel detailed stats
+      const channelStats = {};
+      (stat.channelResponsePairs || []).forEach(({ ch, rt, res }) => {
+        if (!channelStats[ch]) channelStats[ch] = { cases: 0, resolved: 0, responseTimes: [], fastest: Infinity };
+        channelStats[ch].cases++;
+        channelStats[ch].resolved += res;
+        if (rt > 0) {
+          channelStats[ch].responseTimes.push(rt);
+          if (rt < channelStats[ch].fastest) channelStats[ch].fastest = rt;
+        }
       });
+
+      const channelTags = stat.channels
+        .map(cId => {
+          const ch = channelMap[cId];
+          const cs = channelStats[cId] || { cases: 0, resolved: 0, responseTimes: [], fastest: Infinity };
+          const avgRt = cs.responseTimes.length > 0 ? Math.round(cs.responseTimes.reduce((a, b) => a + b, 0) / cs.responseTimes.length) : 0;
+          const fastest = cs.fastest === Infinity ? 0 : cs.fastest;
+          return ch
+            ? { name: ch.name, org: ch.organization, slackChannelId: cId, cases: cs.cases, resolved: cs.resolved, avgResponseTime: avgRt, fastestResponse: fastest }
+            : { name: cId, org: 'Unknown', slackChannelId: cId, cases: cs.cases, resolved: cs.resolved, avgResponseTime: avgRt, fastestResponse: fastest };
+        })
+        .sort((a, b) => b.cases - a.cases);
+
+      // Primary team = org of channel with most cases
+      const primaryTeam = channelTags.length > 0 ? channelTags[0].org : 'Unknown';
 
       const agentId = stat._id.toString();
       const thisWeek = thisWeekMap[agentId];
@@ -715,6 +751,7 @@ exports.getAgents = async (req, res) => {
         email: agentInfo.email || '',
         slackAvatarUrl: agentInfo.slackAvatarUrl || '',
         channels: channelTags,
+        primaryTeam,
         totalCases: stat.totalCases,
         resolvedCases: stat.resolvedCases,
         avgResponseTime: Math.round(stat.avgResponseTime || 0),
@@ -986,18 +1023,30 @@ exports.getActivityFeed = async (req, res) => {
 
     // Long waiting: currently unresolved tickets open > 10 min (exclude dismissed)
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
-    const longWaitingTickets = await KYCTicket.find({
+    const lwPage = parseInt(req.query.lwPage) || 1;
+    const lwLimit = parseInt(req.query.lwLimit) || 30;
+    const lwFilter = {
       status: { $in: ['open', 'claimed', 'in_progress'] },
       createdAt: { $lte: tenMinAgo },
       dismissed: { $ne: true }
-    }).sort({ createdAt: 1 }).limit(50).lean();
+    };
+    const [longWaitingTickets, lwTotal] = await Promise.all([
+      KYCTicket.find(lwFilter).sort({ createdAt: 1 }).skip((lwPage - 1) * lwLimit).limit(lwLimit).lean(),
+      KYCTicket.countDocuments(lwFilter)
+    ]);
 
     // Long waiting history: resolved tickets where total handling > 10 min (600s), exclude dismissed
-    const longHistoryTickets = await KYCTicket.find({
+    const lhPage = parseInt(req.query.lhPage) || 1;
+    const lhLimit = parseInt(req.query.lhLimit) || 30;
+    const lhFilter = {
       status: 'resolved',
       totalHandlingTimeSeconds: { $gte: 600 },
       dismissed: { $ne: true }
-    }).sort({ resolvedAt: -1 }).limit(50).lean();
+    };
+    const [longHistoryTickets, lhTotal] = await Promise.all([
+      KYCTicket.find(lhFilter).sort({ resolvedAt: -1 }).skip((lhPage - 1) * lhLimit).limit(lhLimit).lean(),
+      KYCTicket.countDocuments(lhFilter)
+    ]);
 
     res.json({
       success: true,
@@ -1010,7 +1059,9 @@ exports.getActivityFeed = async (req, res) => {
         totalPages: Math.ceil(totalCount / limit)
       },
       longWaiting: longWaitingTickets.map(mapTicket),
-      longWaitingHistory: longHistoryTickets.map(mapTicket)
+      longWaitingPagination: { page: lwPage, limit: lwLimit, total: lwTotal, totalPages: Math.ceil(lwTotal / lwLimit) },
+      longWaitingHistory: longHistoryTickets.map(mapTicket),
+      longWaitingHistoryPagination: { page: lhPage, limit: lhLimit, total: lhTotal, totalPages: Math.ceil(lhTotal / lhLimit) }
     });
   } catch (error) {
     console.error('Error in getActivityFeed:', error);
@@ -1049,7 +1100,7 @@ exports.getChannels = async (req, res) => {
 
     // Agent breakdown per channel
     const agentBreakdowns = await KYCTicket.aggregate([
-      { $match: { ...match, claimedByAgentId: { $ne: null } } },
+      { $match: withClaimedAgent(match) },
       {
         $group: {
           _id: { channel: '$slackChannelId', agent: '$claimedByAgentId' },
@@ -1118,46 +1169,151 @@ exports.getChannels = async (req, res) => {
 exports.getChannelDetail = async (req, res) => {
   try {
     const { id } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+    const skip = (page - 1) * limit;
+
     const channel = await KYCChannel.findById(id).lean();
     if (!channel) return res.status(404).json({ message: 'Channel not found' });
 
     const match = buildMatchFilter(req.query);
     match.slackChannelId = channel.slackChannelId;
 
-    const [stats, dailyStats] = await Promise.all([
+    const [statsAgg, dailyStats, agentBreakdown, shiftAgg, responseRange, totalCount, tickets] = await Promise.all([
+      // Aggregate stats
       KYCTicket.aggregate([
         { $match: match },
         {
           $group: {
             _id: null,
             totalCases: { $sum: 1 },
-            resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
-            open: { $sum: { $cond: [{ $ne: ['$status', 'resolved'] }, 1, 0] } },
-            avgClaimTime: { $avg: '$responseTimeSeconds' },
-            avgHandling: { $avg: '$totalHandlingTimeSeconds' },
-            agents: { $addToSet: '$claimedByAgentId' }
+            resolvedCases: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
+            openCases: { $sum: { $cond: [{ $ne: ['$status', 'resolved'] }, 1, 0] } },
+            avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            avgClaimTime: { $avg: { $cond: [{ $gt: ['$timeToClaimSeconds', 0] }, '$timeToClaimSeconds', null] } },
+            avgHandlingTime: { $avg: { $cond: [{ $gt: ['$totalHandlingTimeSeconds', 0] }, '$totalHandlingTimeSeconds', null] } },
+            minResponseTime: { $min: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            maxResponseTime: { $max: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } },
+            agentInitiated: { $sum: { $cond: [{ $eq: ['$caseType', 'agent_initiated'] }, 1, 0] } },
+            externalRequest: { $sum: { $cond: [{ $ne: ['$caseType', 'agent_initiated'] }, 1, 0] } },
+            agents: { $addToSet: '$claimedByAgentId' },
+            activeDays: { $addToSet: '$activityDate' }
           }
         }
       ]),
+      // Daily activity
       KYCTicket.aggregate([
         { $match: match },
+        { $group: { _id: '$activityDate', cases: { $sum: 1 }, resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } } } },
+        { $sort: { _id: 1 } }
+      ]),
+      // Per-agent breakdown
+      KYCTicket.aggregate([
+        { $match: withClaimedAgent(match) },
         {
           $group: {
-            _id: '$activityDate',
+            _id: '$claimedByAgentId',
             cases: { $sum: 1 },
-            resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } }
+            resolved: { $sum: { $cond: [{ $eq: ['$status', 'resolved'] }, 1, 0] } },
+            avgResponseTime: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } }
           }
         },
-        { $sort: { _id: 1 } }
-      ])
+        { $sort: { cases: -1 } }
+      ]),
+      // Shift distribution
+      KYCTicket.aggregate([
+        { $match: match },
+        { $group: { _id: '$shift', count: { $sum: 1 } } }
+      ]),
+      // Response time range
+      KYCTicket.aggregate([
+        { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
+        { $group: { _id: null, min: { $min: '$responseTimeSeconds' }, max: { $max: '$responseTimeSeconds' }, avg: { $avg: '$responseTimeSeconds' } } }
+      ]),
+      // Total for pagination
+      KYCTicket.countDocuments(match),
+      // Timeline tickets
+      KYCTicket.find(match)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate('claimedByAgentId', 'name slackAvatarUrl')
+        .populate('resolvedByAgentId', 'name slackAvatarUrl')
+        .lean()
     ]);
+
+    const s = statsAgg[0] || {};
+
+    // Enrich agent breakdown
+    const agentIds = agentBreakdown.map(a => a._id).filter(Boolean);
+    const agentDocs = await KYCAgent.find({ _id: { $in: agentIds } }).lean();
+    const agentMap = {};
+    agentDocs.forEach(a => { agentMap[a._id.toString()] = a; });
+
+    const agentStats = agentBreakdown.map(a => {
+      const doc = agentMap[a._id?.toString()] || {};
+      return {
+        _id: a._id,
+        name: doc.name || 'Unknown',
+        slackAvatarUrl: doc.slackAvatarUrl || '',
+        cases: a.cases,
+        resolved: a.resolved,
+        avgResponseTime: Math.round(a.avgResponseTime || 0)
+      };
+    });
+
+    // Shift map
+    const shifts = {};
+    shiftAgg.forEach(s => { if (s._id) shifts[s._id] = s.count; });
+
+    const resRange = responseRange[0] || {};
+
+    // Map timeline
+    const timeline = tickets.map(t => ({
+      _id: t._id,
+      status: t.status,
+      caseType: t.caseType,
+      activityDate: t.activityDate,
+      createdAt: t.createdAt,
+      shift: t.shift,
+      channel: channel.name,
+      organization: channel.organization,
+      messageText: t.messageText,
+      timeToClaimSeconds: t.timeToClaimSeconds || 0,
+      responseTimeSeconds: t.responseTimeSeconds || 0,
+      replyCount: t.replyCount || 0,
+      claimedBy: t.claimedByAgentId ? { _id: t.claimedByAgentId._id, name: t.claimedByAgentId.name, slackAvatarUrl: t.claimedByAgentId.slackAvatarUrl } : null,
+      resolvedBy: t.resolvedByAgentId ? { _id: t.resolvedByAgentId._id, name: t.resolvedByAgentId.name, slackAvatarUrl: t.resolvedByAgentId.slackAvatarUrl } : null,
+    }));
 
     res.json({
       success: true,
       channel: {
         ...channel,
-        stats: stats[0] || {},
-        dailyStats
+        stats: {
+          totalCases: s.totalCases || 0,
+          resolvedCases: s.resolvedCases || 0,
+          openCases: s.openCases || 0,
+          resolutionRate: s.totalCases > 0 ? Math.round((s.resolvedCases / s.totalCases) * 100) : 0,
+          avgResponseTime: Math.round(s.avgResponseTime || 0),
+          avgClaimTime: Math.round(s.avgClaimTime || 0),
+          avgHandlingTime: Math.round(s.avgHandlingTime || 0),
+          minResponseTime: resRange.min || 0,
+          maxResponseTime: resRange.max || 0,
+          activeAgents: (s.agents || []).filter(Boolean).length,
+          activeDays: (s.activeDays || []).length,
+          agentInitiated: s.agentInitiated || 0,
+          externalRequest: s.externalRequest || 0,
+          shifts
+        },
+        agentBreakdown: agentStats,
+        dailyActivity: dailyStats.map(d => ({ date: d._id, cases: d.cases, resolved: d.resolved }))
+      },
+      timeline,
+      pagination: {
+        page,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit)
       }
     });
   } catch (error) {
@@ -1249,21 +1405,29 @@ exports.getTrends = async (req, res) => {
     // Fetch channel docs for name mapping
     const allChannels = await KYCChannel.find({ isActive: true }).lean();
     const channelNameMap = {};
-    allChannels.forEach(c => { channelNameMap[c.slackChannelId] = c.name; });
+    const channelOrgMap = {};
+    allChannels.forEach(c => {
+      channelNameMap[c.slackChannelId] = c.name;
+      channelOrgMap[c.slackChannelId] = c.organization;
+    });
 
-    const [dailyCasesAgg, dailyResponseTimeAgg, dailyActiveAgentsAgg, shiftDistAgg] = await Promise.all([
+    // Fetch agent docs for name mapping
+    const allAgents = await KYCAgent.find({}).lean();
+    const agentNameMap = {};
+    allAgents.forEach(a => { agentNameMap[a._id.toString()] = a.name || a.email; });
+
+    const [
+      dailyCasesAgg, dailyResponseTimeAgg, dailyActiveAgentsAgg, shiftDistAgg,
+      dailyResolutionAgg, channelVolumeAgg, topAgentsAgg, hourlyAgg,
+      responsePercentileAgg, channelResponseAgg
+    ] = await Promise.all([
       // Daily cases with per-channel breakdown
       KYCTicket.aggregate([
         { $match: match },
-        {
-          $group: {
-            _id: { date: '$activityDate', channel: '$slackChannelId' },
-            count: { $sum: 1 }
-          }
-        },
+        { $group: { _id: { date: '$activityDate', channel: '$slackChannelId' }, count: { $sum: 1 } } },
         { $sort: { '_id.date': 1 } }
       ]),
-      // Daily response time stats
+      // Daily response time stats (avg, min, max, median-ish via p50)
       KYCTicket.aggregate([
         { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
         {
@@ -1271,36 +1435,102 @@ exports.getTrends = async (req, res) => {
             _id: '$activityDate',
             avg: { $avg: '$responseTimeSeconds' },
             min: { $min: '$responseTimeSeconds' },
-            max: { $max: '$responseTimeSeconds' }
+            max: { $max: '$responseTimeSeconds' },
+            count: { $sum: 1 },
+            responseTimes: { $push: '$responseTimeSeconds' }
           }
         },
         { $sort: { _id: 1 } }
       ]),
       // Daily active agents
       KYCTicket.aggregate([
-        { $match: { ...match, claimedByAgentId: { $ne: null } } },
-        {
-          $group: {
-            _id: '$activityDate',
-            agents: { $addToSet: '$claimedByAgentId' }
-          }
-        },
+        { $match: withClaimedAgent(match) },
+        { $group: { _id: '$activityDate', agents: { $addToSet: '$claimedByAgentId' } } },
         { $sort: { _id: 1 } }
       ]),
       // Shift distribution by day
       KYCTicket.aggregate([
         { $match: match },
+        { $group: { _id: { date: '$activityDate', shift: '$shift' }, count: { $sum: 1 } } },
+        { $sort: { '_id.date': 1 } }
+      ]),
+      // Daily resolution rate
+      KYCTicket.aggregate([
+        { $match: match },
         {
           $group: {
-            _id: { date: '$activityDate', shift: '$shift' },
+            _id: '$activityDate',
+            total: { $sum: 1 },
+            resolved: { $sum: { $cond: [{ $ne: ['$resolvedAt', null] }, 1, 0] } }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      // Per-channel total volume (for channel breakdown chart)
+      KYCTicket.aggregate([
+        { $match: match },
+        {
+          $group: {
+            _id: '$slackChannelId',
+            total: { $sum: 1 },
+            resolved: { $sum: { $cond: [{ $ne: ['$resolvedAt', null] }, 1, 0] } },
+            avgResponse: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } }
+          }
+        },
+        { $sort: { total: -1 } }
+      ]),
+      // Top 10 agents by cases handled
+      KYCTicket.aggregate([
+        { $match: withClaimedAgent(match) },
+        {
+          $group: {
+            _id: '$claimedByAgentId',
+            cases: { $sum: 1 },
+            resolved: { $sum: { $cond: [{ $ne: ['$resolvedAt', null] }, 1, 0] } },
+            avgResponse: { $avg: { $cond: [{ $gt: ['$responseTimeSeconds', 0] }, '$responseTimeSeconds', null] } }
+          }
+        },
+        { $sort: { cases: -1 } },
+        { $limit: 10 }
+      ]),
+      // Hourly heatmap (hour of day x day of week) — using Belgrade timezone
+      KYCTicket.aggregate([
+        { $match: match },
+        {
+          $addFields: {
+            createdHour: { $hour: { date: '$createdAt', timezone: 'Europe/Belgrade' } },
+            createdDow: { $dayOfWeek: { date: '$createdAt', timezone: 'Europe/Belgrade' } } // 1=Sun, 7=Sat
+          }
+        },
+        { $group: { _id: { hour: '$createdHour', dow: '$createdDow' }, count: { $sum: 1 } } }
+      ]),
+      // Response time percentiles by day (p50, p90, p95)
+      KYCTicket.aggregate([
+        { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
+        { $sort: { responseTimeSeconds: 1 } },
+        {
+          $group: {
+            _id: '$activityDate',
+            times: { $push: '$responseTimeSeconds' },
             count: { $sum: 1 }
+          }
+        },
+        { $sort: { _id: 1 } }
+      ]),
+      // Per-channel daily response time
+      KYCTicket.aggregate([
+        { $match: { ...match, responseTimeSeconds: { $gt: 0 } } },
+        {
+          $group: {
+            _id: { date: '$activityDate', channel: '$slackChannelId' },
+            avg: { $avg: '$responseTimeSeconds' }
           }
         },
         { $sort: { '_id.date': 1 } }
       ])
     ]);
 
-    // Build dailyCases
+    // Build dailyCases (with per-channel breakdown)
     const dailyCasesMap = {};
     dailyCasesAgg.forEach(row => {
       const date = row._id.date;
@@ -1311,13 +1541,21 @@ exports.getTrends = async (req, res) => {
     });
     const dailyCases = Object.values(dailyCasesMap).sort((a, b) => a.date.localeCompare(b.date));
 
-    // Build dailyResponseTime
-    const dailyResponseTime = dailyResponseTimeAgg.map(row => ({
-      date: row._id,
-      avg: Math.round(row.avg || 0),
-      min: row.min || 0,
-      max: row.max || 0
-    }));
+    // Build dailyResponseTime with percentiles
+    const dailyResponseTime = dailyResponseTimeAgg.map(row => {
+      const sorted = (row.responseTimes || []).sort((a, b) => a - b);
+      const p50 = sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.5)] : 0;
+      const p90 = sorted.length > 0 ? sorted[Math.floor(sorted.length * 0.9)] : 0;
+      return {
+        date: row._id,
+        avg: Math.round(row.avg || 0),
+        min: row.min || 0,
+        max: row.max || 0,
+        p50: Math.round(p50),
+        p90: Math.round(p90),
+        count: row.count
+      };
+    });
 
     // Build dailyActiveAgents
     const dailyActiveAgents = dailyActiveAgentsAgg.map(row => ({
@@ -1337,13 +1575,85 @@ exports.getTrends = async (req, res) => {
     });
     const shiftDistribution = Object.values(shiftMap).sort((a, b) => a.date.localeCompare(b.date));
 
+    // Build daily resolution rate
+    const dailyResolution = dailyResolutionAgg.map(row => ({
+      date: row._id,
+      total: row.total,
+      resolved: row.resolved,
+      rate: row.total > 0 ? Math.round((row.resolved / row.total) * 100) : 0
+    }));
+
+    // Build channel volume
+    const channelVolume = channelVolumeAgg.map(row => ({
+      channel: channelNameMap[row._id] || row._id,
+      org: channelOrgMap[row._id] || 'Unknown',
+      total: row.total,
+      resolved: row.resolved,
+      rate: row.total > 0 ? Math.round((row.resolved / row.total) * 100) : 0,
+      avgResponse: row.avgResponse ? Math.round(row.avgResponse) : null
+    }));
+
+    // Build top agents
+    const topAgents = topAgentsAgg.map(row => ({
+      agentId: row._id,
+      name: agentNameMap[row._id?.toString()] || 'Unknown',
+      cases: row.cases,
+      resolved: row.resolved,
+      rate: row.cases > 0 ? Math.round((row.resolved / row.cases) * 100) : 0,
+      avgResponse: row.avgResponse ? Math.round(row.avgResponse) : null
+    }));
+
+    // Build hourly heatmap
+    const hourlyHeatmap = [];
+    hourlyAgg.forEach(row => {
+      hourlyHeatmap.push({
+        hour: row._id.hour,
+        dow: row._id.dow,
+        count: row.count
+      });
+    });
+
+    // Build per-channel daily response
+    const channelDailyResponse = {};
+    channelResponseAgg.forEach(row => {
+      const date = row._id.date;
+      const chName = channelNameMap[row._id.channel] || row._id.channel;
+      if (!channelDailyResponse[date]) channelDailyResponse[date] = { date };
+      channelDailyResponse[date][chName] = Math.round(row.avg);
+    });
+    const channelResponseTrend = Object.values(channelDailyResponse).sort((a, b) => a.date.localeCompare(b.date));
+
+    // Summary stats
+    const totalCases = dailyCases.reduce((s, d) => s + d.total, 0);
+    const totalResolved = dailyResolution.reduce((s, d) => s + d.resolved, 0);
+    const avgDailyCases = dailyCases.length > 0 ? Math.round(totalCases / dailyCases.length) : 0;
+    const peakDay = dailyCases.reduce((best, d) => d.total > (best?.total || 0) ? d : best, null);
+    const allResponseTimes = dailyResponseTime.filter(d => d.avg > 0);
+    const overallAvgResponse = allResponseTimes.length > 0
+      ? Math.round(allResponseTimes.reduce((s, d) => s + d.avg, 0) / allResponseTimes.length) : 0;
+
     res.json({
       success: true,
       data: {
+        summary: {
+          totalCases,
+          totalResolved,
+          resolutionRate: totalCases > 0 ? Math.round((totalResolved / totalCases) * 100) : 0,
+          avgDailyCases,
+          peakDay: peakDay ? { date: peakDay.date, total: peakDay.total } : null,
+          avgResponseTime: overallAvgResponse,
+          totalDays: dailyCases.length,
+          totalAgents: new Set(topAgentsAgg.map(a => a._id?.toString()).filter(Boolean)).size
+        },
         dailyCases,
         dailyResponseTime,
         dailyActiveAgents,
-        shiftDistribution
+        shiftDistribution,
+        dailyResolution,
+        channelVolume,
+        topAgents,
+        hourlyHeatmap,
+        channelResponseTrend
       }
     });
   } catch (error) {
