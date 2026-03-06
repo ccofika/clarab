@@ -8,6 +8,8 @@ const {
   getChannels,
   getChannelDetail,
   getActivityFeed,
+  dismissTicket,
+  getSlackPermalink,
   getConfig,
   getTrends,
   seed
@@ -50,6 +52,12 @@ router.get('/channels/:id', getChannelDetail);
 
 // Activity Feed
 router.get('/activity-feed', getActivityFeed);
+
+// Dismiss ticket (long waiting false alarms)
+router.post('/tickets/:id/dismiss', dismissTicket);
+
+// Slack permalink
+router.get('/slack-permalink', getSlackPermalink);
 
 // Config
 router.get('/config', getConfig);

@@ -918,6 +918,8 @@ exports.getActivityFeed = async (req, res) => {
     const items = tickets.map(t => ({
       _id: t._id,
       channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
+      slackChannelId: t.slackChannelId,
+      slackMessageTs: t.slackMessageTs,
       organization: channelMap[t.slackChannelId]?.organization || 'Unknown',
       trackingMode: channelMap[t.slackChannelId]?.trackingMode || 'full',
       status: t.status,
@@ -950,6 +952,53 @@ exports.getActivityFeed = async (req, res) => {
     // Available channels for filter dropdown
     const channelOptions = allChannels.map(c => ({ name: c.name, slackChannelId: c.slackChannelId, organization: c.organization }));
 
+    // Helper to map a ticket to response format
+    const mapTicket = (t) => ({
+      _id: t._id,
+      channel: channelMap[t.slackChannelId]?.name || t.slackChannelId,
+      slackChannelId: t.slackChannelId,
+      slackMessageTs: t.slackMessageTs,
+      organization: channelMap[t.slackChannelId]?.organization || 'Unknown',
+      status: t.status,
+      caseType: t.caseType || 'external_request',
+      messageText: t.messageText || '',
+      createdAt: t.createdAt,
+      claimedAt: t.claimedAt,
+      resolvedAt: t.resolvedAt,
+      timeToClaimSeconds: t.timeToClaimSeconds,
+      responseTimeSeconds: t.responseTimeSeconds,
+      totalHandlingTimeSeconds: t.totalHandlingTimeSeconds,
+      shift: t.shift,
+      activityDate: t.activityDate,
+      replyCount: t.replyCount || 0,
+      waitingSeconds: t.status !== 'resolved' ? Math.floor((Date.now() - new Date(t.createdAt).getTime()) / 1000) : undefined,
+      claimedBy: t.claimedByAgentId ? {
+        _id: t.claimedByAgentId,
+        name: agentMap[t.claimedByAgentId.toString()]?.name || 'Unknown',
+        slackAvatarUrl: agentMap[t.claimedByAgentId.toString()]?.slackAvatarUrl || ''
+      } : null,
+      resolvedBy: t.resolvedByAgentId ? {
+        _id: t.resolvedByAgentId,
+        name: agentMap[t.resolvedByAgentId.toString()]?.name || 'Unknown',
+        slackAvatarUrl: agentMap[t.resolvedByAgentId.toString()]?.slackAvatarUrl || ''
+      } : null
+    });
+
+    // Long waiting: currently unresolved tickets open > 10 min (exclude dismissed)
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const longWaitingTickets = await KYCTicket.find({
+      status: { $in: ['open', 'claimed', 'in_progress'] },
+      createdAt: { $lte: tenMinAgo },
+      dismissed: { $ne: true }
+    }).sort({ createdAt: 1 }).limit(50).lean();
+
+    // Long waiting history: resolved tickets where total handling > 10 min (600s), exclude dismissed
+    const longHistoryTickets = await KYCTicket.find({
+      status: 'resolved',
+      totalHandlingTimeSeconds: { $gte: 600 },
+      dismissed: { $ne: true }
+    }).sort({ resolvedAt: -1 }).limit(50).lean();
+
     res.json({
       success: true,
       items,
@@ -959,7 +1008,9 @@ exports.getActivityFeed = async (req, res) => {
         limit,
         total: totalCount,
         totalPages: Math.ceil(totalCount / limit)
-      }
+      },
+      longWaiting: longWaitingTickets.map(mapTicket),
+      longWaitingHistory: longHistoryTickets.map(mapTicket)
     });
   } catch (error) {
     console.error('Error in getActivityFeed:', error);
@@ -1112,6 +1163,51 @@ exports.getChannelDetail = async (req, res) => {
   } catch (error) {
     console.error('Error in getChannelDetail:', error);
     res.status(500).json({ message: 'Failed to fetch channel detail', error: error.message });
+  }
+};
+
+/**
+ * POST /api/kyc-goals/tickets/:id/dismiss
+ * Dismiss a ticket from long-waiting panels
+ */
+exports.dismissTicket = async (req, res) => {
+  try {
+    const ticket = await KYCTicket.findById(req.params.id);
+    if (!ticket) return res.status(404).json({ message: 'Ticket not found' });
+
+    ticket.dismissed = true;
+    ticket.dismissedAt = new Date();
+    ticket.dismissedBy = req.user.email;
+    await ticket.save();
+
+    res.json({ success: true, ticketId: ticket._id });
+  } catch (error) {
+    console.error('Error dismissing ticket:', error);
+    res.status(500).json({ message: 'Failed to dismiss ticket', error: error.message });
+  }
+};
+
+/**
+ * GET /api/kyc-goals/slack-permalink
+ * Get a Slack permalink for a message using chat.getPermalink API
+ */
+exports.getSlackPermalink = async (req, res) => {
+  try {
+    const { channel, message_ts } = req.query;
+    if (!channel || !message_ts) {
+      return res.status(400).json({ message: 'channel and message_ts are required' });
+    }
+
+    const slack = getSlackClient();
+    if (!slack) {
+      return res.status(500).json({ message: 'Slack bot not configured' });
+    }
+
+    const result = await slack.chat.getPermalink({ channel, message_ts });
+    res.json({ permalink: result.permalink });
+  } catch (error) {
+    console.error('Error getting Slack permalink:', error.data?.error || error.message);
+    res.status(500).json({ message: 'Failed to get Slack permalink' });
   }
 };
 

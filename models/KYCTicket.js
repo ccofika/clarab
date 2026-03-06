@@ -130,6 +130,18 @@ const kycTicketSchema = new mongoose.Schema({
     default: 'external_request'
   },
 
+  // Dismissed from long-waiting panels (false alarm / bug)
+  dismissed: {
+    type: Boolean,
+    default: false
+  },
+  dismissedAt: {
+    type: Date
+  },
+  dismissedBy: {
+    type: String
+  },
+
   // Meta
   shift: {
     type: String,
