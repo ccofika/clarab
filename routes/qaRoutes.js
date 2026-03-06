@@ -181,6 +181,7 @@ const {
   createReportTemplate,
   updateReportTemplate,
   deleteReportTemplate,
+  duplicateReportTemplate,
   getIntercomReferenceData,
   countReport,
   executeReport,
@@ -1137,6 +1138,7 @@ router.get('/intercom-report/templates', getReportTemplates);
 router.post('/intercom-report/templates', createReportTemplate);
 router.put('/intercom-report/templates/:id', updateReportTemplate);
 router.delete('/intercom-report/templates/:id', deleteReportTemplate);
+router.post('/intercom-report/templates/:id/duplicate', duplicateReportTemplate);
 router.post('/intercom-report/count', countReport);
 router.post('/intercom-report/execute', executeReport);
 router.get('/intercom-report/conversation/:id', getConversationMeta);

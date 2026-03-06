@@ -136,9 +136,11 @@ async function fetchContactAttribute(contactId, attribute) {
 // @access  Private
 exports.getReportTemplates = async (req, res) => {
   try {
-    const templates = await IntercomReportTemplate.find({ createdBy: req.user._id })
-      .sort({ updatedAt: -1 });
-    res.json(templates);
+    const [userTemplates, defaultTemplates] = await Promise.all([
+      IntercomReportTemplate.find({ createdBy: req.user._id }).sort({ updatedAt: -1 }),
+      IntercomReportTemplate.find({ isDefault: true }).sort({ name: 1 })
+    ]);
+    res.json({ userTemplates, defaultTemplates });
   } catch (error) {
     logger.error('Error fetching report templates:', error);
     res.status(500).json({ message: 'Server error' });
@@ -198,18 +200,44 @@ exports.updateReportTemplate = async (req, res) => {
 // @access  Private
 exports.deleteReportTemplate = async (req, res) => {
   try {
-    const result = await IntercomReportTemplate.findOneAndDelete({
-      _id: req.params.id,
-      createdBy: req.user._id
-    });
-
-    if (!result) {
+    const template = await IntercomReportTemplate.findById(req.params.id);
+    if (!template) {
       return res.status(404).json({ message: 'Template not found' });
     }
+    if (template.isDefault) {
+      return res.status(403).json({ message: 'Default templates cannot be deleted' });
+    }
+    if (String(template.createdBy) !== String(req.user._id)) {
+      return res.status(403).json({ message: 'Not authorized' });
+    }
 
+    await IntercomReportTemplate.findByIdAndDelete(req.params.id);
     res.json({ message: 'Template deleted' });
   } catch (error) {
     logger.error('Error deleting report template:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// @desc    Duplicate a report template (default or user-owned)
+// @route   POST /api/qa/intercom-report/templates/:id/duplicate
+// @access  Private
+exports.duplicateReportTemplate = async (req, res) => {
+  try {
+    const source = await IntercomReportTemplate.findById(req.params.id);
+    if (!source) {
+      return res.status(404).json({ message: 'Template not found' });
+    }
+
+    const duplicate = await IntercomReportTemplate.create({
+      name: `${source.name} (Copy)`,
+      createdBy: req.user._id,
+      isDefault: false,
+      filters: source.filters
+    });
+    res.status(201).json(duplicate);
+  } catch (error) {
+    logger.error('Error duplicating report template:', error);
     res.status(500).json({ message: 'Server error' });
   }
 };

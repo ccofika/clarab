@@ -10,7 +10,11 @@ const intercomReportTemplateSchema = new mongoose.Schema({
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true
+    default: null
+  },
+  isDefault: {
+    type: Boolean,
+    default: false
   },
   filters: {
     // Teammate (admin) filter
