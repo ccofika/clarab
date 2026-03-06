@@ -401,10 +401,14 @@ const handleClaimReaction = async (event, channelDoc) => {
       console.log(`📝 KYC Goals: Auto-creating ticket for claim on ${messageTs} in ${channelDoc.name}`);
     }
 
+    // Get parent thread_ts so we can find this ticket when agent replies in the thread
+    const parentThreadTs = await getMessageThreadTs(slackChannelId, messageTs);
+
     await KYCTicket.claimTicket({
       channelId: channelDoc._id,
       slackChannelId,
       messageTs: ticket ? ticket.slackMessageTs : messageTs,
+      parentThreadTs: parentThreadTs || undefined,
       agentId: agent._id,
       agentSlackId: event.user,
       eventTs: event.event_ts
@@ -1031,30 +1035,29 @@ exports.getActivityFeed = async (req, res) => {
       } : null
     });
 
-    // Long waiting: currently unresolved tickets waiting > 10 min since last external message (exclude dismissed)
+    // Long waiting: unresolved tickets waiting > 10 min since last external message (exclude dismissed)
     const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
     const lwPage = parseInt(req.query.lwPage) || 1;
     const lwLimit = parseInt(req.query.lwLimit) || 30;
     const lwFilter = {
       status: { $in: ['open', 'claimed', 'in_progress'] },
       dismissed: { $ne: true },
-      // Use lastExternalMessageAt if set, otherwise fall back to createdAt
       $or: [
         { lastExternalMessageAt: { $exists: true, $lte: tenMinAgo } },
         { lastExternalMessageAt: { $exists: false }, createdAt: { $lte: tenMinAgo } }
       ]
     };
     const [longWaitingTickets, lwTotal] = await Promise.all([
-      KYCTicket.find(lwFilter).sort({ createdAt: 1 }).skip((lwPage - 1) * lwLimit).limit(lwLimit).lean(),
+      KYCTicket.find(lwFilter).sort({ lastExternalMessageAt: 1, createdAt: 1 }).skip((lwPage - 1) * lwLimit).limit(lwLimit).lean(),
       KYCTicket.countDocuments(lwFilter)
     ]);
 
-    // Long waiting history: resolved tickets where total handling > 10 min (600s), exclude dismissed
+    // Long waiting history: resolved tickets where response time (claim→resolve) > 10 min (600s)
     const lhPage = parseInt(req.query.lhPage) || 1;
     const lhLimit = parseInt(req.query.lhLimit) || 30;
     const lhFilter = {
       status: 'resolved',
-      totalHandlingTimeSeconds: { $gte: 600 },
+      responseTimeSeconds: { $gte: 600 },
       dismissed: { $ne: true }
     };
     const [longHistoryTickets, lhTotal] = await Promise.all([

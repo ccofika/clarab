@@ -206,7 +206,7 @@ kycTicketSchema.statics.findOrCreateFromMessage = async function(data) {
  * Claim a ticket (⏳ reaction)
  */
 kycTicketSchema.statics.claimTicket = async function(data) {
-  const { slackChannelId, messageTs, agentId, agentSlackId, eventTs } = data;
+  const { slackChannelId, messageTs, agentId, agentSlackId, eventTs, parentThreadTs } = data;
 
   // Find ticket by the message that was reacted to
   let ticket = await this.findOne({ slackChannelId, slackMessageTs: messageTs });
@@ -226,8 +226,10 @@ kycTicketSchema.statics.claimTicket = async function(data) {
         channelId: data.channelId,
         slackChannelId,
         slackMessageTs: messageTs,
-        threadTs: messageTs,
+        // Store parent thread_ts so replies in the same thread can find this ticket
+        threadTs: parentThreadTs || messageTs,
         createdAt: msgDate,
+        lastExternalMessageAt: msgDate,
         status: 'open',
         shift: getShiftFromHour(hour),
         activityDate: getBelgradeDateString(msgDate)
@@ -336,9 +338,27 @@ kycTicketSchema.statics.resolveTicket = async function(data) {
 kycTicketSchema.statics.recordReply = async function(data) {
   const { slackChannelId, threadTs, agentId, agentSlackId, messageTs, channelId } = data;
 
-  let ticket = await this.findOne({ slackChannelId, slackMessageTs: threadTs });
+  // Find the most recent unresolved ticket in this thread
+  // Tickets can have threadTs = parent thread_ts (for thread reply cases)
+  // or slackMessageTs = threadTs (for top-level message cases)
+  let ticket = await this.findOne({
+    slackChannelId,
+    status: { $in: ['open', 'claimed', 'in_progress'] },
+    $or: [
+      { slackMessageTs: threadTs },
+      { threadTs: threadTs }
+    ]
+  }).sort({ createdAt: -1 });
+
   if (!ticket) {
-    // Auto-create ticket from the parent message (thread_ts)
+    // No unresolved ticket — check if any resolved ticket exists
+    ticket = await this.findOne({
+      slackChannelId,
+      $or: [{ slackMessageTs: threadTs }, { threadTs: threadTs }]
+    }).sort({ createdAt: -1 });
+  }
+
+  if (!ticket) {
     if (channelId) {
       console.log(`📝 KYCTicket.recordReply: Auto-creating ticket for thread ${threadTs} in ${slackChannelId}`);
       const msgDate = new Date(parseFloat(threadTs) * 1000);
@@ -349,6 +369,7 @@ kycTicketSchema.statics.recordReply = async function(data) {
         slackMessageTs: threadTs,
         threadTs,
         createdAt: msgDate,
+        lastExternalMessageAt: msgDate,
         status: 'open',
         shift: getShiftFromHour(hour),
         activityDate: getBelgradeDateString(msgDate)
@@ -379,17 +400,30 @@ kycTicketSchema.statics.recordReply = async function(data) {
     }
   }
 
-  // Fallback claim: if ticket is still open, treat first reply as a claim
+  // Agent reply = resolve the ticket (reply IS the response)
   if (ticket.status === 'open') {
+    // Not yet claimed — set claim info too
     ticket.claimedByAgentId = agentId;
     ticket.claimedBySlackId = agentSlackId;
     ticket.claimedAt = replyDate;
-    ticket.status = 'in_progress';
     if (waitStart) {
       ticket.timeToClaimSeconds = Math.floor((replyDate - waitStart) / 1000);
     }
-  } else if (ticket.status === 'claimed') {
-    ticket.status = 'in_progress';
+  }
+
+  // Resolve the ticket — agent replied, case is handled
+  ticket.resolvedByAgentId = agentId;
+  ticket.resolvedBySlackId = agentSlackId;
+  ticket.resolvedAt = replyDate;
+  ticket.status = 'resolved';
+
+  // Compute response time: from claim to resolve (or from waitStart if just claimed now)
+  const claimTime = ticket.claimedAt || replyDate;
+  ticket.responseTimeSeconds = Math.floor((replyDate - claimTime) / 1000);
+
+  // Compute total handling time from last external message
+  if (waitStart) {
+    ticket.totalHandlingTimeSeconds = Math.floor((replyDate - waitStart) / 1000);
   }
 
   await ticket.save();
@@ -403,7 +437,11 @@ kycTicketSchema.statics.recordReply = async function(data) {
 kycTicketSchema.statics.recordExternalThreadMessage = async function(data) {
   const { slackChannelId, threadTs, messageTs } = data;
 
-  let ticket = await this.findOne({ slackChannelId, slackMessageTs: threadTs });
+  // Find ticket by thread — could be stored as slackMessageTs or threadTs
+  let ticket = await this.findOne({
+    slackChannelId,
+    $or: [{ slackMessageTs: threadTs }, { threadTs: threadTs }]
+  }).sort({ createdAt: -1 });
   if (!ticket) return null;
 
   const msgDate = new Date(parseFloat(messageTs) * 1000);
